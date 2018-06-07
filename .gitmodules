@@ -1,0 +1,3 @@
+[submodule "EPOS_Canopen"]
+	path = EPOS_Canopen
+	url = https://github.com/brtiberio/EPOS_Canopen.git
