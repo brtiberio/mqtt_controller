@@ -217,7 +217,7 @@ class Epos_controller(Epos):
         '''
         # check if inputs were supplied
         if not exitFlag:
-            logging.info('[{0}] Error: exitFlag must be supplied'.format(
+            logging.info('[EPOS: {0}] Error: exitFlag must be supplied'.format(
                 sys._getframe().f_code.co_name))
             return
         # -----------------------------------------------------------------------
@@ -226,17 +226,18 @@ class Epos_controller(Epos):
         stateID = self.checkEposState()
         # failed to get state?
         if stateID is -1:
-            logging.info('[{0}] Error: Unknown state'.format(
+            logging.info('[EPOS: {0}] Error: Unknown state'.format(
                 sys._getframe().f_code.co_name))
             return
         # If epos is not in disable operation at least, motor is expected to be blocked
         if stateID > 4:
-            logging.info('[{0}] Not a proper operation mode: {1}'.format(
+            logging.info('[EPOS: {0}] Not a proper operation mode: {1}'.format(
                 sys._getframe().f_code.co_name,
                 self.state[stateID]))
-            logging.info('[{0}] Please change operation mode'.format(
+            if not self.changeEposState('shutdown'):
+                logging.info('[EPOS: {0}] Failed to change Epos state to shutdown'.format(
                 sys._getframe().f_code.co_name))
-            return
+                return
         # all ok, proceed
         if not filename:
             filename = time.asctime()
@@ -274,7 +275,7 @@ class Epos_controller(Epos):
             # sleep?
             time.sleep(0.01)
 
-        logging.info('[{0}] Finishing collecting data'.format(
+        logging.info('[EPOS: {0}] Finishing collecting data'.format(
             sys._getframe().f_code.co_name))
         my_file.close()
 
@@ -327,7 +328,7 @@ class Epos_controller(Epos):
             return
 
         # check if file exist
-        my_file = pathlib.Path(self.dataDir+filename+'.csv')
+        my_file = pathlib.Path(filename)
         if not my_file.exists():
             logging.info('[Epos:{0}] File does not exist: {1}'.format(
                     sys._getframe().f_code.co_name,
@@ -335,7 +336,7 @@ class Epos_controller(Epos):
             return
 
         # open csv file and read all values.
-        with open(my_file) as csvfile:
+        with open(filename) as csvfile:
             reader = csv.DictReader(csvfile, delimiter=',')
             data = {}
             for row in reader:
@@ -346,13 +347,33 @@ class Epos_controller(Epos):
                         data[header] = [value]
                     except ValueError:
                         data[header].append(float(value))
+        
+        try:
+            data['time'][0] = int(data['time'][0])
+        except ValueError:
+            data['time'][0] = float(data['time'][0])
+        
+        data['position'][0] = int(data['position'][0])
         I = 0
         maxI = len(data['time'])
+        self.moveToPosition(int(data['position'][0]))
+        try:
+            input("Press any key when ready...")
+        except KeyboardInterrupt as e:
+            logging.warning('[EPOS: {0}]Got execption {1}... exiting now'.format(
+                sys._getframe().f_code.co_name, e))
+            # shutdown
+            if not self.changeEposState('shutdown'):
+                logging.info('[Epos:{0}] Failed to change Epos state to shutdown'.format(
+                    sys._getframe().f_code.co_name))
+            return
+
+        updateFlag = False
         t0 = time.monotonic()
         while(I < maxI):
             tOut = time.monotonic()-t0
             # skip to next step?
-            if tOut > data['time'][I]:
+            if tOut > float(data['time'][I]):
                 I += 1
                 updateFlag = True
             else:
@@ -360,7 +381,7 @@ class Epos_controller(Epos):
                 if (updateFlag):
                     updateFlag = False
                     # get new reference position.
-                    self.setPositionModeSetting(data['position'][I])
+                    self.setPositionModeSetting(int(data['position'][I]))
                 else:
                     # if not time to update new ref, request current position
                     aux, OK = self.readPositionValue()
@@ -369,7 +390,7 @@ class Epos_controller(Epos):
                             sys._getframe().f_code.co_name))
                         return
                     # does error have grown to much?
-                    if abs(data['position'][I]-aux) > self.maxFollowingError:
+                    if abs(int(data['position'][I])-aux) > self.maxFollowingError:
                         logging.info('[Epos:{0}] Error is growing to much. Something seems wrong'.format(
                             sys._getframe().f_code.co_name))
                         if not self.changeEposState('shutdown'):
@@ -417,9 +438,13 @@ class Epos_controller(Epos):
             logging.info('[{0}] Not a proper operation mode: {1}'.format(
                 sys._getframe().f_code.co_name,
                 self.state[stateID]))
-            logging.info('[{0}] Please change operation mode'.format(
-                sys._getframe().f_code.co_name))
-            return
+            # shutdown
+            if not self.changeEposState('shutdown'):
+                logging.info('[Epos:{0}] Failed to change Epos state to shutdown'.format(
+                    sys._getframe().f_code.co_name))
+                return
+            logging.info('[Epos:{0}] Sucessfully changed Epos state to shutdown'.format(
+                    sys._getframe().f_code.co_name))
 
         maxValue = 0
         minValue = 0
@@ -446,11 +471,11 @@ class Epos_controller(Epos):
             sys._getframe().f_code.co_name))
         self.minValue = minValue
         self.maxValue = maxValue
-        self.zeroRef = round((maxValue-minValue)/2.0)
+        self.zeroRef = round((maxValue-minValue)/2.0 + minValue)
         self.calibrated = 1
         return
 
-    def moveToPosition(self, pFinal):
+    def moveToPosition(self, pFinal, deg=False):
         # constants
         # Tmax = 1.7 seems to be the limit before oscillations.
         Tmax = 1.7  # max period for 1 rotation;
@@ -655,10 +680,10 @@ def main():
     args = parser.parse_args()
 
     # set up logging to file - see previous section for more details
-    logging.basicConfig(level=logging.INFO,
+    logging.basicConfig(level=logging.DEBUG,
                         format='[%(asctime)s.%(msecs)03d] [%(name)-20s]: %(levelname)-8s %(message)s',
                         datefmt='%d-%m-%Y %H:%M:%S',
-                        filename='epos.log',
+                        filename='mqtt_controller.log',
                         filemode='w')
     # define a Handler which writes INFO messages or higher
     console = logging.StreamHandler()
@@ -682,7 +707,7 @@ def main():
     epos = Epos_controller(_network=network)
     # declare threads
     eposThread = threading.Thread(name="EPOS", target=epos.startCalibration,
-                                       args=(exitFlag))
+                                       kwargs={'exitFlag': exitFlag})
 
     if not (epos.begin(args.nodeID, objectDictionary=args.objDict)):
         logging.info('Failed to begin connection with EPOS device')
@@ -694,18 +719,18 @@ def main():
     try:
         eposThread.start()
         print("Please move steering wheel to extreme positions to calibrate...")
-        input("Press Enter when done...")
+        input("Press Enter when done...\n")
     except KeyboardInterrupt as e:
-        logging.warning('Got execption {0}... exiting now'.format(e))
+        logging.warning('[Main] Got execption {0}... exiting now'.format(e))
         return
 
     exitFlag.set()
     eposThread.join()
     if(epos.calibrated == -1):
-        print("Failed to perform calibration")
+        logging.info("[Main] Failed to perform calibration")
         return
     if(epos.calibrated == 0):
-        print("Calibration not yet done")
+        logging.info("[Main] Calibration not yet done")
         return
     # reset event()
     exitFlag.clear()
@@ -727,9 +752,10 @@ def main():
     mainMenuSaveQC = Button("Save qc to file", 1)
     mainMenuReadQC = Button("Follow qc from file", 2)
     mainMenuMove = Button("Move to position", 3)
+    mainMenuShowConfig = Button("Show config", 4)
     mainMenuQuit = Button("Quit", 0)
     mainMenuButtons = [mainMenuSaveQC,
-                       mainMenuReadQC, mainMenuMove, mainMenuQuit]
+                       mainMenuReadQC, mainMenuMove, mainMenuShowConfig, mainMenuQuit]
     mainMenu = Menu("Main menu", mainMenuButtons)
     stopCycle = False
     try:
@@ -746,18 +772,38 @@ def main():
                                                   kwargs={'exitFlag': exitFlag})
                     eposThread.start()
                     print("Recording to file.")
-                    input("Press Enter when done...")
+                    input("Press Enter when done...\n")
                     exitFlag.set()
                     eposThread.join()
                 elif val is 2:
-                    pass
+                    # get latest file in data dir
+                    directory = pathlib.Path('./data/')
+                    _ , file_path = max((f.stat().st_mtime, f) for f in directory.iterdir())
+                    epos.readFromFile(str(file_path))
                 elif val is 3:
-                    pass
+                    try:
+                        x = int(input("Enter desired position [qc]: "))
+                        print('-----------------------------------------------------------')
+                        print('Moving to position {0:+16,}'.format(x))
+                        epos.moveToPosition(x, deg=False)
+                        print('done')
+                        print('-----------------------------------------------------------')
+                        # shutdown
+                        if not epos.changeEposState('shutdown'):
+                            logging.info('[Main] Failed to change Epos state to shutdown')
+                    except KeyboardInterrupt as e:
+                        logging.info('[Main] Got execption {0}... exiting now'.format(e))
+                elif val is 4:
+                    print("Show configurations:")
+                    epos.printPositionControlParameters()
+                    epos.printMotorConfig()
+                    epos.printSensorConfig()
+                    input("Press any key to continue...\n")
                 else:
                     pass
 
     except KeyboardInterrupt as e:
-        print('Got execption {0}... exiting now'.format(e))
+        logging.info('[Main] Got execption {0}... exiting now'.format(e))
     finally:
         exitFlag.set()  # in case any thread is still working
         epos.disconnect()
