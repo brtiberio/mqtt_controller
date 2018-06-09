@@ -220,6 +220,8 @@ class Epos_controller(Epos):
             logging.info('[EPOS: {0}] Error: exitFlag must be supplied'.format(
                 sys._getframe().f_code.co_name))
             return
+	# make sure is clear.
+        exitFlag.clear()
         # -----------------------------------------------------------------------
         # Confirm epos is in a suitable state for free movement
         # -----------------------------------------------------------------------
