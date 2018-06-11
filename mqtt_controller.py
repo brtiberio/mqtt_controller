@@ -62,7 +62,7 @@ class Menu(object):
     def display(self):
         """Displaying the menu alongside the navigation elements"""
 
-        self.clear()
+        # self.clear()
         # Display menu name
         print(self.name)
 
@@ -115,7 +115,7 @@ class Button(object):
 
 class Epos_controller(Epos):
 
-    maxFollowingError = 5000
+    maxFollowingError = 7500
     minValue = 0
     maxValue = 0
     zeroRef = 0
@@ -243,6 +243,10 @@ class Epos_controller(Epos):
         # all ok, proceed
         if not filename:
             filename = time.asctime()
+            # windows has a problem with ':' in the name of files
+            # replace it by underscores
+            filename=filename.replace(':', '_')
+            filename=filename.replace(' ', '_')
 
         # make dir if not already made
         pathlib.Path(self.dataDir).mkdir(parents=True, exist_ok=True)
@@ -250,6 +254,7 @@ class Epos_controller(Epos):
         if not my_file.exists():
             # create a new name
             filename = time.asctime()
+        filename.replace(':', '_')
 
         # open the parameters file first
         my_file = open(self.dataDir + filename + '.txt', 'w')
@@ -717,7 +722,11 @@ def main():
         return
     # emcy messages handles
     epos.node.emcy.add_callback(epos.emcyErrorPrint)
-
+    # default values were 52, 1, 15
+    epos.setPositionControlParameters(pGain=52, iGain=1, dGain=10)
+    # show current Position control parameters
+    epos.printPositionControlParameters()
+    
     try:
         eposThread.start()
         print("Please move steering wheel to extreme positions to calibrate...")
