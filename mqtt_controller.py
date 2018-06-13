@@ -126,7 +126,6 @@ class Epos_controller(Epos):
     minAngle = -maxAngle
     dataDir = "./data/"
 
-
     def emcyErrorPrint(self, EmcyError):
         '''Print any EMCY Error Received on CAN BUS
         '''
@@ -220,8 +219,8 @@ class Epos_controller(Epos):
             logging.info('[EPOS: {0}] Error: exitFlag must be supplied'.format(
                 sys._getframe().f_code.co_name))
             return
-	# make sure is clear.
-	if exitFlag.isSet():
+            # make sure is clear.
+        if exitFlag.isSet():
             exitFlag.clear()
         # -----------------------------------------------------------------------
         # Confirm epos is in a suitable state for free movement
@@ -239,17 +238,17 @@ class Epos_controller(Epos):
                 self.state[stateID]))
             if not self.changeEposState('shutdown'):
                 logging.info('[EPOS: {0}] Failed to change Epos state to shutdown'.format(
-                sys._getframe().f_code.co_name))
+                    sys._getframe().f_code.co_name))
                 return
             logging.info('[Epos:{0}] Sucessfully changed Epos state to shutdown'.format(
-                    sys._getframe().f_code.co_name))
+                sys._getframe().f_code.co_name))
         # all ok, proceed
         if not filename:
             filename = time.asctime()
             # windows has a problem with ':' in the name of files
             # replace it by underscores
-            filename=filename.replace(':', '_')
-            filename=filename.replace(' ', '_')
+            filename = filename.replace(':', '_')
+            filename = filename.replace(' ', '_')
 
         # make dir if not already made
         pathlib.Path(self.dataDir).mkdir(parents=True, exist_ok=True)
@@ -282,7 +281,7 @@ class Epos_controller(Epos):
             if not OK:
                 logging.info('({0}) Failed to request current position'.format(
                     sys._getframe().f_code.co_name))
-                numFails = numFails +1
+                numFails = numFails + 1
             else:
                 writer.writerow({'time': tOut, 'position': currentValue})
             # sleep?
@@ -328,24 +327,24 @@ class Epos_controller(Epos):
         # shutdown
         if not self.changeEposState('shutdown'):
             logging.info('[Epos:{0}] Failed to change Epos state to shutdown'.format(
-                    sys._getframe().f_code.co_name))
+                sys._getframe().f_code.co_name))
             return
         # switch on
         if not self.changeEposState('switch on'):
             logging.info('[Epos:{0}] Failed to change Epos state to switch on'.format(
-                    sys._getframe().f_code.co_name))
+                sys._getframe().f_code.co_name))
             return
         if not self.changeEposState('enable operation'):
             logging.info('[Epos:{0}] Failed to change Epos state to enable operation'.format(
-                    sys._getframe().f_code.co_name))
+                sys._getframe().f_code.co_name))
             return
 
         # check if file exist
         my_file = pathlib.Path(filename)
         if not my_file.exists():
             logging.info('[Epos:{0}] File does not exist: {1}'.format(
-                    sys._getframe().f_code.co_name,
-                    my_file))
+                sys._getframe().f_code.co_name,
+                my_file))
             return
 
         # open csv file and read all values.
@@ -360,12 +359,12 @@ class Epos_controller(Epos):
                         data[header] = [value]
                     except ValueError:
                         data[header].append(float(value))
-        
+
         try:
             data['time'][0] = int(data['time'][0])
         except ValueError:
             data['time'][0] = float(data['time'][0])
-        
+
         data['position'][0] = int(data['position'][0])
         I = 0
         maxI = len(data['time'])
@@ -401,14 +400,14 @@ class Epos_controller(Epos):
                     if not OK:
                         logging.info('[Epos:{0}] Failed to request current position'.format(
                             sys._getframe().f_code.co_name))
-                        numFails = numFails +1
+                        numFails = numFails + 1
                     # does error have grown to much?
                     if abs(int(data['position'][I])-aux) > self.maxFollowingError:
                         logging.info('[Epos:{0}] Error is growing to much. Something seems wrong'.format(
                             sys._getframe().f_code.co_name))
                         if not self.changeEposState('shutdown'):
                             logging.info('[Epos:{0}] Failed to change Epos state to shutdown'.format(
-                            sys._getframe().f_code.co_name))
+                                sys._getframe().f_code.co_name))
                         return
                     # use sleep?
                     time.sleep(0.005)
@@ -417,9 +416,8 @@ class Epos_controller(Epos):
             sys._getframe().f_code.co_name, time.monotonic()-t0, numFails))
         if not self.changeEposState('shutdown'):
             logging.info('[Epos:{0}] Failed to change Epos state to shutdown'.format(
-                            sys._getframe().f_code.co_name))
+                sys._getframe().f_code.co_name))
         return
-
 
     def startCalibration(self, exitFlag=None):
         '''Perform steering wheel calibration
@@ -457,7 +455,7 @@ class Epos_controller(Epos):
                     sys._getframe().f_code.co_name))
                 return
             logging.info('[Epos:{0}] Sucessfully changed Epos state to shutdown'.format(
-                    sys._getframe().f_code.co_name))
+                sys._getframe().f_code.co_name))
 
         maxValue = 0
         minValue = 0
@@ -474,7 +472,7 @@ class Epos_controller(Epos):
                 # self.maxValue = None
                 # self.calibrated = -1
                 # return
-                numFails = numFails +1
+                numFails = numFails + 1
             if currentValue > maxValue:
                 maxValue = currentValue
             if currentValue < minValue:
@@ -669,6 +667,7 @@ class Epos_controller(Epos):
         # require sleep?
         time.sleep(0.001)
 
+
 def main():
     '''Perform steering wheel calibration.
 
@@ -734,7 +733,7 @@ def main():
     epos.setPositionControlParameters(pGain=100, iGain=0, dGain=0)
     # show current Position control parameters
     epos.printPositionControlParameters()
-    
+
     try:
         eposThread.start()
         print("Please move steering wheel to extreme positions to calibrate...")
@@ -797,21 +796,26 @@ def main():
                 elif val is 2:
                     # get latest file in data dir
                     directory = pathlib.Path('./data/')
-                    _ , file_path = max((f.stat().st_mtime, f) for f in directory.iterdir())
+                    _, file_path = max((f.stat().st_mtime, f)
+                                       for f in directory.iterdir())
                     epos.readFromFile(str(file_path))
                 elif val is 3:
                     try:
                         x = int(input("Enter desired position [qc]: "))
-                        print('-----------------------------------------------------------')
+                        print(
+                            '-----------------------------------------------------------')
                         print('Moving to position {0:+16,}'.format(x))
                         epos.moveToPosition(x, deg=False)
                         print('done')
-                        print('-----------------------------------------------------------')
+                        print(
+                            '-----------------------------------------------------------')
                         # shutdown
                         if not epos.changeEposState('shutdown'):
-                            logging.info('[Main] Failed to change Epos state to shutdown')
+                            logging.info(
+                                '[Main] Failed to change Epos state to shutdown')
                     except KeyboardInterrupt as e:
-                        logging.info('[Main] Got execption {0}... exiting now'.format(e))
+                        logging.info(
+                            '[Main] Got execption {0}... exiting now'.format(e))
                 elif val is 4:
                     print("Show configurations:")
                     epos.printPositionControlParameters()
