@@ -221,7 +221,8 @@ class Epos_controller(Epos):
                 sys._getframe().f_code.co_name))
             return
 	# make sure is clear.
-        exitFlag.clear()
+	if exitFlag.isSet():
+            exitFlag.clear()
         # -----------------------------------------------------------------------
         # Confirm epos is in a suitable state for free movement
         # -----------------------------------------------------------------------
@@ -240,6 +241,8 @@ class Epos_controller(Epos):
                 logging.info('[EPOS: {0}] Failed to change Epos state to shutdown'.format(
                 sys._getframe().f_code.co_name))
                 return
+            logging.info('[Epos:{0}] Sucessfully changed Epos state to shutdown'.format(
+                    sys._getframe().f_code.co_name))
         # all ok, proceed
         if not filename:
             filename = time.asctime()
@@ -254,7 +257,7 @@ class Epos_controller(Epos):
         if not my_file.exists():
             # create a new name
             filename = time.asctime()
-        filename.replace(':', '_')
+            filename.replace(':', '_')
 
         # open the parameters file first
         my_file = open(self.dataDir + filename + '.txt', 'w')
@@ -269,6 +272,8 @@ class Epos_controller(Epos):
         # -----------------------------------------------------------------------
         # start requesting for positions of sensor
         # -----------------------------------------------------------------------
+        # var to store number of fails
+        numFails = 0
         # get current time
         t0 = time.monotonic()
         while(exitFlag.isSet() == False):
@@ -277,13 +282,14 @@ class Epos_controller(Epos):
             if not OK:
                 logging.info('({0}) Failed to request current position'.format(
                     sys._getframe().f_code.co_name))
-                return
-            writer.writerow({'time': tOut, 'position': currentValue})
+                numFails = numFails +1
+            else:
+                writer.writerow({'time': tOut, 'position': currentValue})
             # sleep?
             time.sleep(0.01)
 
-        logging.info('[EPOS: {0}] Finishing collecting data'.format(
-            sys._getframe().f_code.co_name))
+        logging.info('[EPOS: {0}] Finishing collecting data with {1} fail readings'.format(
+            sys._getframe().f_code.co_name, numFails))
         my_file.close()
 
     def readFromFile(self, filename=None):
@@ -374,7 +380,7 @@ class Epos_controller(Epos):
                 logging.info('[Epos:{0}] Failed to change Epos state to shutdown'.format(
                     sys._getframe().f_code.co_name))
             return
-
+        numFails = 0
         updateFlag = False
         t0 = time.monotonic()
         while(I < maxI):
@@ -395,7 +401,7 @@ class Epos_controller(Epos):
                     if not OK:
                         logging.info('[Epos:{0}] Failed to request current position'.format(
                             sys._getframe().f_code.co_name))
-                        return
+                        numFails = numFails +1
                     # does error have grown to much?
                     if abs(int(data['position'][I])-aux) > self.maxFollowingError:
                         logging.info('[Epos:{0}] Error is growing to much. Something seems wrong'.format(
@@ -407,8 +413,8 @@ class Epos_controller(Epos):
                     # use sleep?
                     time.sleep(0.005)
         # all done
-        logging.info('[Epos:{0}] All done: Time to process all vars was {1} seconds'.format(
-            sys._getframe().f_code.co_name, time.monotonic()-t0))
+        logging.info('[Epos:{0}] All done: Time to process all vars was {1} seconds with {2} fail readings'.format(
+            sys._getframe().f_code.co_name, time.monotonic()-t0, numFails))
         if not self.changeEposState('shutdown'):
             logging.info('[Epos:{0}] Failed to change Epos state to shutdown'.format(
                             sys._getframe().f_code.co_name))
@@ -455,6 +461,7 @@ class Epos_controller(Epos):
 
         maxValue = 0
         minValue = 0
+        numFails = 0
         # -----------------------------------------------------------------------
         # start requesting for positions of sensor
         # -----------------------------------------------------------------------
@@ -463,10 +470,11 @@ class Epos_controller(Epos):
             if not OK:
                 logging.info('({0}) Failed to request current position'.format(
                     sys._getframe().f_code.co_name))
-                self.minValue = None
-                self.maxValue = None
-                self.calibrated = -1
-                return
+                # self.minValue = None
+                # self.maxValue = None
+                # self.calibrated = -1
+                # return
+                numFails = numFails +1
             if currentValue > maxValue:
                 maxValue = currentValue
             if currentValue < minValue:
@@ -474,8 +482,8 @@ class Epos_controller(Epos):
             # sleep?
             time.sleep(0.01)
 
-        logging.info('[{0}] Finishing calibration routine'.format(
-            sys._getframe().f_code.co_name))
+        logging.info('[{0}] Finishing calibration routine with {1} fail readings'.format(
+            sys._getframe().f_code.co_name, numFails))
         self.minValue = minValue
         self.maxValue = maxValue
         self.zeroRef = round((maxValue-minValue)/2.0 + minValue)
@@ -723,7 +731,7 @@ def main():
     # emcy messages handles
     epos.node.emcy.add_callback(epos.emcyErrorPrint)
     # default values were 52, 1, 15
-    epos.setPositionControlParameters(pGain=52, iGain=1, dGain=10)
+    epos.setPositionControlParameters(pGain=100, iGain=0, dGain=0)
     # show current Position control parameters
     epos.printPositionControlParameters()
     
