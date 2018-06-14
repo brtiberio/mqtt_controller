@@ -253,10 +253,10 @@ class Epos_controller(Epos):
         # make dir if not already made
         pathlib.Path(self.dataDir).mkdir(parents=True, exist_ok=True)
         my_file = pathlib.Path(self.dataDir+filename+'.csv')
-        if not my_file.exists():
-            # create a new name
-            filename = time.asctime()
-            filename.replace(':', '_')
+        # if not my_file.exists():
+        #    # create a new name
+        #    filename = time.asctime()
+        #    filename.replace(':', '_')
 
         # open the parameters file first
         my_file = open(self.dataDir + filename + '.txt', 'w')
@@ -401,14 +401,15 @@ class Epos_controller(Epos):
                         logging.info('[Epos:{0}] Failed to request current position'.format(
                             sys._getframe().f_code.co_name))
                         numFails = numFails + 1
-                    # does error have grown to much?
-                    if abs(int(data['position'][I])-aux) > self.maxFollowingError:
-                        logging.info('[Epos:{0}] Error is growing to much. Something seems wrong'.format(
-                            sys._getframe().f_code.co_name))
-                        if not self.changeEposState('shutdown'):
-                            logging.info('[Epos:{0}] Failed to change Epos state to shutdown'.format(
+                    else:
+                        # does error have grown to much?
+                        if abs(int(data['position'][I])-aux) > self.maxFollowingError:
+                            logging.info('[Epos:{0}] Error is growing to much. Something seems wrong'.format(
                                 sys._getframe().f_code.co_name))
-                        return
+                            if not self.changeEposState('shutdown'):
+                                logging.info('[Epos:{0}] Failed to change Epos state to shutdown'.format(
+                                    sys._getframe().f_code.co_name))
+                            return
                     # use sleep?
                     time.sleep(0.005)
         # all done
@@ -730,7 +731,7 @@ def main():
     # emcy messages handles
     epos.node.emcy.add_callback(epos.emcyErrorPrint)
     # default values were 52, 1, 15
-    epos.setPositionControlParameters(pGain=100, iGain=0, dGain=0)
+    epos.setPositionControlParameters(pGain=54, iGain=1, dGain=3)
     # show current Position control parameters
     epos.printPositionControlParameters()
 

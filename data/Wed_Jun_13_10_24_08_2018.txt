@@ -1,0 +1,3 @@
+minValue = -51696
+maxValue = 43752
+zeroRef = -3972
