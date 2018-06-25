@@ -469,10 +469,6 @@ class Epos_controller(Epos):
             if not OK:
                 logging.info('({0}) Failed to request current position'.format(
                     sys._getframe().f_code.co_name))
-                # self.minValue = None
-                # self.maxValue = None
-                # self.calibrated = -1
-                # return
                 numFails = numFails + 1
             if currentValue > maxValue:
                 maxValue = currentValue
@@ -522,7 +518,7 @@ class Epos_controller(Epos):
         maxL13 = 2.0 * maxSpeed**2/maxAcceleration
 
         # max error in quadrature counters
-        MAXERROR = 5000
+        MAXERROR = 7500
         if not self.calibrated:
             logging.info('[{0}] Device is not yet calibrated'.format(
                 sys._getframe().f_code.co_name))
