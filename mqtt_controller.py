@@ -146,25 +146,22 @@ class Epos_controller(Epos):
             int: a rounded integer with qc position estimated or None if not possible
         '''
         if not self.calibrated:
-            logging.info('[{0}] Device is not yet calibrated'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Device is not yet calibrated')
             return None
         if delta > self.maxAngle:
-            logging.info('[{0}] Angle exceeds limits: maxAngle: {1}\t requested: {2}'.format(
-                sys._getframe().f_code.co_name,
+            self.logInfo('Angle exceeds limits: maxAngle: {0}\t requested: {1}'.format(
                 self.maxAngle,
                 delta))
             return None
         if delta < self.minAngle:
-            logging.info('[{0}] Angle exceeds limits: minAngle: {1}\t requested: {2}'.format(
-                sys._getframe().f_code.co_name,
+            self.logInfo('Angle exceeds limits: minAngle: {0}\t requested: {1}'.format(
                 self.minAngle,
                 delta))
             return None
         # perform calculations y = mx + b
         val = delta*self.DELTA_TO_QC + self.zeroRef
         val = round(val)
-        return val
+        return int(val)
 
     def getDeltaAngle(self, qc):
         ''' Converts qc of steering wheel to angle of wheels
@@ -178,28 +175,27 @@ class Epos_controller(Epos):
             double: estimated angle of wheels in degrees or None if not possible
         '''
         if not self.calibrated:
-            logging.info('[{0}] Device is not yet calibrated'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Device is not yet calibrated')
             return None
 
         # perform calculations y = mx + b and solve to x
         delta = (qc-self.zeroRef)*self.QC_TO_DELTA
-        return delta
+        return float(delta)
 
     def saveToFile(self, filename=None, exitFlag=None):
         '''Record qc positions into a csv file
 
         The following fields will be recorded
 
-        +-------+----------+
-        | time  | position |
-        +-------+----------+
-        | t1    | p1       |
-        +-------+----------+
-        | ...   | ...      |
-        +-------+----------+
-        | tN    | pN       |
-        +-------+----------+
+        +-------+----------+-------+
+        | time  | position | Angle |
+        +-------+----------+-------+
+        | t1    | p1       | a1    |
+        +-------+----------+-------+
+        | ...   | ...      | ...   |
+        +-------+----------+-------+
+        | tN    | pN       | aN    |
+        +-------+----------+-------+
 
         An adicional file with same name but with ext TXT will have the current
         calibration parameters
@@ -213,11 +209,11 @@ class Epos_controller(Epos):
 
         Args:
             filename: name of the file to save the data
+            exitFlag: threading event flag to signal exit.
         '''
         # check if inputs were supplied
         if not exitFlag:
-            logging.info('[EPOS: {0}] Error: exitFlag must be supplied'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Error: exitFlag must be supplied')
             return
             # make sure is clear.
         if exitFlag.isSet():
@@ -228,20 +224,16 @@ class Epos_controller(Epos):
         stateID = self.checkEposState()
         # failed to get state?
         if stateID is -1:
-            logging.info('[EPOS: {0}] Error: Unknown state'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Error: Unknown state')
             return
         # If epos is not in disable operation at least, motor is expected to be blocked
         if stateID > 4:
-            logging.info('[EPOS: {0}] Not a proper operation mode: {1}'.format(
-                sys._getframe().f_code.co_name,
+            self.logInfo('Not a proper operation mode: {0}'.format(
                 self.state[stateID]))
             if not self.changeEposState('shutdown'):
-                logging.info('[EPOS: {0}] Failed to change Epos state to shutdown'.format(
-                    sys._getframe().f_code.co_name))
+                self.logInfo('Failed to change Epos state to shutdown')
                 return
-            logging.info('[Epos:{0}] Sucessfully changed Epos state to shutdown'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Sucessfully changed Epos state to shutdown')
         # all ok, proceed
         if not filename:
             filename = time.asctime()
@@ -266,7 +258,8 @@ class Epos_controller(Epos):
 
         # open the csv file
         my_file = open(self.dataDir + filename + '.csv', 'w')
-        writer = csv.DictWriter(my_file, fieldnames=['time', 'position'])
+        writer = csv.DictWriter(my_file, fieldnames=[
+                                'time', 'position', 'angle'])
         writer.writeheader()
         # -----------------------------------------------------------------------
         # start requesting for positions of sensor
@@ -279,71 +272,90 @@ class Epos_controller(Epos):
             currentValue, OK = self.readPositionValue()
             tOut = time.monotonic()-t0
             if not OK:
-                logging.info('({0}) Failed to request current position'.format(
-                    sys._getframe().f_code.co_name))
+                self.logInfo('Failed to request current position')
                 numFails = numFails + 1
             else:
-                writer.writerow({'time': tOut, 'position': currentValue})
+                writer.writerow({'time': tOut, 'position': currentValue,
+                                 'angle': self.getDeltaAngle(currentValue)})
             # sleep?
             time.sleep(0.01)
 
-        logging.info('[EPOS: {0}] Finishing collecting data with {1} fail readings'.format(
-            sys._getframe().f_code.co_name, numFails))
+        self.logInfo('Finishing collecting data with {0} fail readings'.format(
+            numFails))
         my_file.close()
 
-    def readFromFile(self, filename=None):
+    def readFromFile(self, filename=None, useAngle=False):
         '''Read qc positions from file and follow them
 
         The file must contain time and position in quadrature positions of steering
-        wheel in a csv style
+        wheel and angle (degrees) of "center" wheel of bicicle model in a csv style
 
-        +-------+----------+
-        | time  | position |
-        +-------+----------+
-        | t1    | p1       |
-        +-------+----------+
-        | ...   | ...      |
-        +-------+----------+
-        | tN    | pN       |
-        +-------+----------+
+        +-------+----------+-------+
+        | time  | position | angle |
+        +-------+----------+-------+
+        | t1    | p1       | a1    |
+        +-------+----------+-------+
+        | ...   | ...      | ...   |
+        +-------+----------+-------+
+        | tN    | pN       | aN    |
+        +-------+----------+-------+
+
+        If the calibration value is not the same, user should set useAngle flag.
+        Because the calibration when the file was created can differ from current
+        calibration, user should set the useAngle flag to calculate the position
+        reference to send for device via the given angle.
 
         Args:
             filename: csv file to be read.
+            useAngle: use the angle value instead of position.
         '''
         # get current state of epos
         state = self.checkEposState()
         if state is -1:
-            logging.info('[Epos:{0}] Error: Unknown state'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Error: Unknown state')
             return
 
         if state is 11:
             # perform fault reset
             if not self.changeEposState('fault reset'):
-                logging.info('[Epos:{0}] Error: Failed to change state to fault reset'.format(
-                    sys._getframe().f_code.co_name))
+                self.logInfo('Error: Failed to change state to fault reset')
                 return
-
+        # get current op mode
+        opMode, Ok = self.readOpMode()
+        if not Ok:
+            logging.info('Failed to request current OP Mode')
+            return
+        # show current op Mode
+        self.logInfo('Current OP Mode is {0}'.format(
+            self.opModes[opMode]
+        ))
+        # check if mode is position
+        if opMode is not -1:
+            if not self.setOpMode(-1):
+                self.logInfo('Failed to change opMode to {0}'.format(
+                    self.opModes[-1]
+                ))
+                return
+            else:
+                self.logInfo('OP Mode is now {0}'.format(
+                    self.opModes[-1]
+                ))
         # shutdown
         if not self.changeEposState('shutdown'):
-            logging.info('[Epos:{0}] Failed to change Epos state to shutdown'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Failed to change Epos state to shutdown')
             return
         # switch on
         if not self.changeEposState('switch on'):
-            logging.info('[Epos:{0}] Failed to change Epos state to switch on'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Failed to change Epos state to switch on')
             return
         if not self.changeEposState('enable operation'):
-            logging.info('[Epos:{0}] Failed to change Epos state to enable operation'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Failed to change Epos state to enable operation')
             return
 
         # check if file exist
         my_file = pathlib.Path(filename)
         if not my_file.exists():
-            logging.info('[Epos:{0}] File does not exist: {1}'.format(
-                sys._getframe().f_code.co_name,
+            self.logInfo('File does not exist: {0}'.format(
                 my_file))
             return
 
@@ -360,25 +372,34 @@ class Epos_controller(Epos):
                     except ValueError:
                         data[header].append(float(value))
 
+        # correct the first entries
         try:
             data['time'][0] = int(data['time'][0])
         except ValueError:
             data['time'][0] = float(data['time'][0])
 
+        if useAngle:
+            data['angle'][0] = float(data['angle'][0])
         data['position'][0] = int(data['position'][0])
+
         I = 0
         maxI = len(data['time'])
-        self.moveToPosition(int(data['position'][0]))
+        # align to the first position before starting
+        if useAngle:
+            position = self.getQcPosition(data['angle'][0])
+            self.moveToPosition(position)
+        else:
+            self.moveToPosition(int(data['position'][0]))
+        # wait for user to be ready to go.
         try:
             input("Press any key when ready...")
         except KeyboardInterrupt as e:
-            logging.warning('[EPOS: {0}]Got execption {1}... exiting now'.format(
-                sys._getframe().f_code.co_name, e))
+            self.logInfo('Got execption {0}... exiting now'.format(e))
             # shutdown
             if not self.changeEposState('shutdown'):
-                logging.info('[Epos:{0}] Failed to change Epos state to shutdown'.format(
-                    sys._getframe().f_code.co_name))
+                self.logInfo('Failed to change Epos state to shutdown')
             return
+
         numFails = 0
         updateFlag = False
         t0 = time.monotonic()
@@ -393,31 +414,33 @@ class Epos_controller(Epos):
                 if (updateFlag):
                     updateFlag = False
                     # get new reference position.
-                    self.setPositionModeSetting(int(data['position'][I]))
+                    if useAngle:
+                        position = self.getQcPosition(data['angle'][I])
+                        self.setPositionModeSetting(position)
+                    else:
+                        self.setPositionModeSetting(int(data['position'][I]))
                 else:
                     # if not time to update new ref, request current position
                     aux, OK = self.readPositionValue()
                     if not OK:
-                        logging.info('[Epos:{0}] Failed to request current position'.format(
-                            sys._getframe().f_code.co_name))
+                        self.logInfo('Failed to request current position')
                         numFails = numFails + 1
                     else:
                         # does error have grown to much?
                         if abs(int(data['position'][I])-aux) > self.maxFollowingError:
-                            logging.info('[Epos:{0}] Error is growing to much. Something seems wrong'.format(
-                                sys._getframe().f_code.co_name))
+                            self.logInfo(
+                                'Error is growing to much. Something seems wrong')
                             if not self.changeEposState('shutdown'):
-                                logging.info('[Epos:{0}] Failed to change Epos state to shutdown'.format(
-                                    sys._getframe().f_code.co_name))
+                                self.logInfo(
+                                    'Failed to change Epos state to shutdown')
                             return
                     # use sleep?
                     time.sleep(0.005)
         # all done
-        logging.info('[Epos:{0}] All done: Time to process all vars was {1} seconds with {2} fail readings'.format(
-            sys._getframe().f_code.co_name, time.monotonic()-t0, numFails))
+        self.logInfo('All done: Time to process all vars was {0} seconds with {1} fail readings'.format(
+            time.monotonic()-t0, numFails))
         if not self.changeEposState('shutdown'):
-            logging.info('[Epos:{0}] Failed to change Epos state to shutdown'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Failed to change Epos state to shutdown')
         return
 
     def startCalibration(self, exitFlag=None):
@@ -433,8 +456,7 @@ class Epos_controller(Epos):
         '''
         # check if inputs were supplied
         if not exitFlag:
-            logging.info('[{0}] Error: check arguments supplied'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Error: check arguments supplied')
             return
         stateID = self.checkEposState()
         # -----------------------------------------------------------------------
@@ -442,21 +464,17 @@ class Epos_controller(Epos):
         # -----------------------------------------------------------------------
         # failed to get state?
         if stateID is -1:
-            logging.info('[{0}] Error: Unknown state'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Error: Unknown state')
             return
         # If epos is not in disable operation at least, motor is expected to be blocked
         if stateID > 4:
-            logging.info('[{0}] Not a proper operation mode: {1}'.format(
-                sys._getframe().f_code.co_name,
+            self.logInfo('Not a proper operation mode: {0}'.format(
                 self.state[stateID]))
             # shutdown
             if not self.changeEposState('shutdown'):
-                logging.info('[Epos:{0}] Failed to change Epos state to shutdown'.format(
-                    sys._getframe().f_code.co_name))
+                self.logInfo('Failed to change state to shutdown')
                 return
-            logging.info('[Epos:{0}] Sucessfully changed Epos state to shutdown'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Sucessfully changed state to shutdown')
 
         maxValue = 0
         minValue = 0
@@ -467,8 +485,7 @@ class Epos_controller(Epos):
         while(exitFlag.isSet() == False):
             currentValue, OK = self.readPositionValue()
             if not OK:
-                logging.info('({0}) Failed to request current position'.format(
-                    sys._getframe().f_code.co_name))
+                self.logDebug('Failed to request current position')
                 numFails = numFails + 1
             if currentValue > maxValue:
                 maxValue = currentValue
@@ -477,15 +494,18 @@ class Epos_controller(Epos):
             # sleep?
             time.sleep(0.01)
 
-        logging.info('[{0}] Finishing calibration routine with {1} fail readings'.format(
-            sys._getframe().f_code.co_name, numFails))
+        self.logInfo(
+            'Finished calibration routine with {0} fail readings'.format(numFails))
         self.minValue = minValue
         self.maxValue = maxValue
         self.zeroRef = round((maxValue-minValue)/2.0 + minValue)
         self.calibrated = 1
+        self.logInfo('MinValue: {0}, MaxValue: {1}, ZeroRef: {2}'.format(
+            self.minValue, self.maxValue, self.zeroRef
+        ))
         return
 
-    def moveToPosition(self, pFinal, deg=False):
+    def moveToPosition(self, pFinal):
         # constants
         # Tmax = 1.7 seems to be the limit before oscillations.
         Tmax = 1.7  # max period for 1 rotation;
@@ -520,47 +540,42 @@ class Epos_controller(Epos):
         # max error in quadrature counters
         MAXERROR = 7500
         if not self.calibrated:
-            logging.info('[{0}] Device is not yet calibrated'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Device is not yet calibrated')
             return False
 
         if(pFinal > self.maxValue or pFinal < self.minValue):
-            logging.info('[{0}] Final position exceeds phisical limits'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Final position exceeds phisical limits')
             return False
 
         pStart, OK = self.readPositionValue()
         if not OK:
-            logging.info('({0}) Failed to request current position'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Failed to request current position')
             return False
         # -----------------------------------------------------------------------
         # get current state of epos and change it if necessary
         # -----------------------------------------------------------------------
         state = self.checkEposState()
         if state is -1:
-            logging.info('[Epos:{0}] Error: Unknown state\n'.format(
-                sys._getframe().f_code.co_name))
+            self.logInfo('Error: Unknown state')
             return
 
         if state is 11:
             # perform fault reset
             ok = self.changeEposState('fault reset')
             if not ok:
-                logging.info('[Epos:{0}] Error: Failed to change state to fault reset\n'.format(
-                    sys._getframe().f_code.co_name))
+                self.logInfo('Error: Failed to change state to fault reset')
                 return
 
         # shutdown
         if not self.changeEposState('shutdown'):
-            logging.info('Failed to change Epos state to shutdown')
+            self.logInfo('Failed to change Epos state to shutdown')
             return
         # switch on
         if not self.changeEposState('switch on'):
-            logging.info('Failed to change Epos state to switch on')
+            self.logInfo('Failed to change Epos state to switch on')
             return
         if not self.changeEposState('enable operation'):
-            logging.info('Failed to change Epos state to enable operation')
+            self.logInfo('Failed to change Epos state to enable operation')
             return
         # -----------------------------------------------------------------------
         # Find remaining constants
@@ -610,8 +625,7 @@ class Epos_controller(Epos):
                 self.setPositionModeSetting(pFinal)
                 aux, OK = self.readPositionValue()
                 if not OK:
-                    logging.info('({0}) Failed to request current position'.format(
-                        sys._getframe().f_code.co_name))
+                    self.logInfo('Failed to request current position')
                     return
                 outVar = np.append(outVar, [aux])
                 tout = np.append(tout, [time.monotonic()-t0])
@@ -645,20 +659,18 @@ class Epos_controller(Epos):
                 inVar = np.append(inVar, [aux])
                 OK = self.setPositionModeSetting(np.int32(inVar[-1]).item())
                 if not OK:
-                    logging.info('({0}) Failed to set target position'.format(
-                        sys._getframe().f_code.co_name))
+                    self.logInfo('Failed to set target position')
                     return
                 aux, OK = self.readPositionValue()
                 if not OK:
-                    logging.info('({0}) Failed to request current position'.format(
-                        sys._getframe().f_code.co_name))
+                    self.logInfo('Failed to request current position')
                     return
                 outVar = np.append(outVar, [aux])
                 tout = np.append(tout, [time.monotonic()-t0])
                 ref_error = np.append(ref_error, [inVar[-1]-outVar[-1]])
                 if(abs(ref_error[-1]) > MAXERROR):
                     self.changeEposState('shutdown')
-                    print('Something seems wrong, error is growing to mutch!!!')
+                    self.logInfo('Something seems wrong, error is growing to mutch!!!')
                     return
         # plotter.update(tin, tout, inVar, outVar, ref_error)
         # require sleep?
@@ -712,8 +724,10 @@ def main():
     # TODO: in order to be able to use EPOS with the SINAMCIS, network must be shared
     # For now, create the network from scratch
     network = canopen.Network()
-    network.connect(channel=args.channel, bustype=args.bus)
-
+    try:
+        network.connect(channel=args.channel, bustype=args.bus)
+    except Exception as e:
+        logging.info('Exception caught:{0}'.format(str(e)))
     # instanciate object
     epos = Epos_controller(_network=network)
     # declare threads
@@ -802,7 +816,7 @@ def main():
                         print(
                             '-----------------------------------------------------------')
                         print('Moving to position {0:+16,}'.format(x))
-                        epos.moveToPosition(x, deg=False)
+                        epos.moveToPosition(x)
                         print('done')
                         print(
                             '-----------------------------------------------------------')
