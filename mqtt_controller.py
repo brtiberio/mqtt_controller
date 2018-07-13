@@ -31,87 +31,55 @@ import canopen
 import os
 import pathlib
 import csv
-
+import pdb
 
 # import queue
-# import paho.mqtt.client as mqtt
+import paho.mqtt.client as mqtt
+import paho.mqtt.publish as publish
 
 
 from EPOS_Canopen.epos import Epos
 
-# shortcut for clear console
+protocol = mqtt.MQTTv311
+# mqtt topics to be used with epos
+protocol = mqtt.MQTTv311
+eposTopic = 'VIENA/steering/'                 # base topic
+eposAngle = eposTopic + 'angle'               # current angle
+mqttControlleTopic = 'VIENA/mqttController/'  # controller base topic
+mqttLogTopic = mqttControlleTopic + 'logger'  # controller logger topic
+# controller connection status
+mqttStatusTopic = mqttControlleTopic + 'connectStatus'
+# controller canopen connection status
+mqttCanopenStatus = mqttControlleTopic + 'canopenStatus'
 
 
-def clear():
-    os.system('cls' if os.name == 'nt' else 'clear')
+class MQTTHandler(logging.Handler):
+    """
+    A handler class which writes logging records, appropriately formatted,
+    to a MQTT server to a topic.
+    """
 
+    def __init__(self, client, topic, qos=0, retain=False):
+        logging.Handler.__init__(self)
+        self.topic = topic
+        self.qos = qos
+        self.retain = retain
+        self.client = client
 
-class Menu(object):
-
-    """Base class for the menu"""
-
-    def __init__(self, name, buttons):
-        # Initialize values
-        self.name = name
-        self.buttons = buttons
-        self.exitFlag = False
-
-    def clear(self):
-        os.system('cls' if os.name == 'nt' else 'clear')
-
-    def display(self):
-        """Displaying the menu alongside the navigation elements"""
-
-        # self.clear()
-        # Display menu name
-        print(self.name)
-
-        # Display menu buttons
-        for button in self.buttons:
-            print("   ", button.nav, button.name)
-
-        # Wait for user input
-        return self.userInput()
-
-    def userInput(self):
-        """Method to check and act upon user's input"""
-
-        # This holds the amount of errors for the
-        # navigation element to input comparison.
-        errSel = 0
-        inputSel = input("Enter selection> ")
-
-        for button in self.buttons:
-            # If input equals to button's navigation element
-            if inputSel == str(button.nav):
-                # Do the button's function
-                return button.nav
-            # If input != navigation element
-            else:
-                # Increase "error on selection" by one, for
-                # counting the errors and checking their
-                # amount against the total number of
-                # buttons. If greater to or equal that means
-                # no elements were selected.
-                # In that case show error and try again
-                errSel += 1
-
-        # No usable input, try again
-        if errSel >= len(self.buttons):
-            print("Error on selection; try again.")
-            return None
-
-
-class Button(object):
-
-    """Base class for menu buttons"""
-
-    def __init__(self, name, nav):
-        # Initialize values
-        self.name = name
-        # Navigation element; number which user has to enter to do button action
-        self.nav = nav
-
+    def emit(self, record):
+        """
+        Publish a single formatted logging record to a broker, then disconnect
+        cleanly.
+        """
+        msg = self.format(record)
+        # send single and disconnect or stay connected? TODO
+        # publish.single(self.topic, msg, self.qos, self.retain,
+        #                hostname=self.hostname, port=self.port,
+        #                client_id=self.client_id, keepalive=self.keepalive,
+        #                will=self.will, auth=self.auth, tls=self.tls,
+        #                protocol=self.protocol, transport=self.transport)
+        self.client.publish(self.topic, payload=msg,
+                       qos=self.qos, retain=self.retain)
 
 class Epos_controller(Epos):
 
@@ -122,15 +90,14 @@ class Epos_controller(Epos):
     calibrated = 0
     QC_TO_DELTA = -7.501E-4
     DELTA_TO_QC = 1.0/QC_TO_DELTA
-    maxAngle = 28
+    maxAngle = 29
     minAngle = -maxAngle
     dataDir = "./data/"
 
     def emcyErrorPrint(self, EmcyError):
         '''Print any EMCY Error Received on CAN BUS
         '''
-        logging.info('[{0}] Got an EMCY message: {1}'.format(
-            sys._getframe().f_code.co_name, EmcyError))
+        self.logInfo('Got an EMCY message: {0}'.format(EmcyError))
         return
 
     def getQcPosition(self, delta):
@@ -183,12 +150,12 @@ class Epos_controller(Epos):
         return float(delta)
 
     def saveToFile(self, filename=None, exitFlag=None):
-        '''Record qc positions into a csv file
+        '''Record qc positions and angle into a csv file
 
         The following fields will be recorded
 
         +-------+----------+-------+
-        | time  | position | Angle |
+        | time  | position | angle |
         +-------+----------+-------+
         | t1    | p1       | a1    |
         +-------+----------+-------+
@@ -214,7 +181,7 @@ class Epos_controller(Epos):
         # check if inputs were supplied
         if not exitFlag:
             self.logInfo('Error: exitFlag must be supplied')
-            return
+            return False
             # make sure is clear.
         if exitFlag.isSet():
             exitFlag.clear()
@@ -225,14 +192,14 @@ class Epos_controller(Epos):
         # failed to get state?
         if stateID is -1:
             self.logInfo('Error: Unknown state')
-            return
+            return False
         # If epos is not in disable operation at least, motor is expected to be blocked
         if stateID > 4:
             self.logInfo('Not a proper operation mode: {0}'.format(
                 self.state[stateID]))
             if not self.changeEposState('shutdown'):
                 self.logInfo('Failed to change Epos state to shutdown')
-                return
+                return False
             self.logInfo('Sucessfully changed Epos state to shutdown')
         # all ok, proceed
         if not filename:
@@ -252,8 +219,8 @@ class Epos_controller(Epos):
 
         # open the parameters file first
         my_file = open(self.dataDir + filename + '.txt', 'w')
-        print("minValue = {0}\nmaxValue = {1}\nzeroRef = {2}".format(self.minValue,
-                                                                     self.maxValue, self.zeroRef), file=my_file, flush=True)
+        print("minValue = {0}\nmaxValue = {1}\nzeroRef = {2}".format(
+            self.minValue, self.maxValue, self.zeroRef), file=my_file, flush=True)
         my_file.close()
 
         # open the csv file
@@ -283,6 +250,7 @@ class Epos_controller(Epos):
         self.logInfo('Finishing collecting data with {0} fail readings'.format(
             numFails))
         my_file.close()
+        return True
 
     def readFromFile(self, filename=None, useAngle=False):
         '''Read qc positions from file and follow them
@@ -313,18 +281,18 @@ class Epos_controller(Epos):
         state = self.checkEposState()
         if state is -1:
             self.logInfo('Error: Unknown state')
-            return
+            return False
 
         if state is 11:
             # perform fault reset
             if not self.changeEposState('fault reset'):
                 self.logInfo('Error: Failed to change state to fault reset')
-                return
+                return False
         # get current op mode
         opMode, Ok = self.readOpMode()
         if not Ok:
             logging.info('Failed to request current OP Mode')
-            return
+            return False
         # show current op Mode
         self.logInfo('Current OP Mode is {0}'.format(
             self.opModes[opMode]
@@ -335,7 +303,7 @@ class Epos_controller(Epos):
                 self.logInfo('Failed to change opMode to {0}'.format(
                     self.opModes[-1]
                 ))
-                return
+                return False
             else:
                 self.logInfo('OP Mode is now {0}'.format(
                     self.opModes[-1]
@@ -343,21 +311,21 @@ class Epos_controller(Epos):
         # shutdown
         if not self.changeEposState('shutdown'):
             self.logInfo('Failed to change Epos state to shutdown')
-            return
+            return False
         # switch on
         if not self.changeEposState('switch on'):
             self.logInfo('Failed to change Epos state to switch on')
-            return
+            return False
         if not self.changeEposState('enable operation'):
             self.logInfo('Failed to change Epos state to enable operation')
-            return
+            return False
 
         # check if file exist
         my_file = pathlib.Path(filename)
         if not my_file.exists():
             self.logInfo('File does not exist: {0}'.format(
                 my_file))
-            return
+            return False
 
         # open csv file and read all values.
         with open(filename) as csvfile:
@@ -387,6 +355,12 @@ class Epos_controller(Epos):
         # align to the first position before starting
         if useAngle:
             position = self.getQcPosition(data['angle'][0])
+            # if position can not be calculated, alert user.
+            if position is None:
+                self.logInfo('Failed to calculate position value')
+                if not self.changeEposState('shutdown'):
+                    self.logInfo('Failed to change Epos state to shutdown')
+                return False
             self.moveToPosition(position)
         else:
             self.moveToPosition(int(data['position'][0]))
@@ -398,7 +372,7 @@ class Epos_controller(Epos):
             # shutdown
             if not self.changeEposState('shutdown'):
                 self.logInfo('Failed to change Epos state to shutdown')
-            return
+            return False
 
         numFails = 0
         updateFlag = False
@@ -416,6 +390,13 @@ class Epos_controller(Epos):
                     # get new reference position.
                     if useAngle:
                         position = self.getQcPosition(data['angle'][I])
+                        # if position can not be calculated, alert user.
+                        if position is None:
+                            self.logInfo('Failed to calculate position value')
+                            if not self.changeEposState('shutdown'):
+                                self.logInfo(
+                                    'Failed to change Epos state to shutdown')
+                            return False
                         self.setPositionModeSetting(position)
                     else:
                         self.setPositionModeSetting(int(data['position'][I]))
@@ -433,7 +414,7 @@ class Epos_controller(Epos):
                             if not self.changeEposState('shutdown'):
                                 self.logInfo(
                                     'Failed to change Epos state to shutdown')
-                            return
+                            return False
                     # use sleep?
                     time.sleep(0.005)
         # all done
@@ -441,7 +422,7 @@ class Epos_controller(Epos):
             time.monotonic()-t0, numFails))
         if not self.changeEposState('shutdown'):
             self.logInfo('Failed to change Epos state to shutdown')
-        return
+        return True
 
     def startCalibration(self, exitFlag=None):
         '''Perform steering wheel calibration
@@ -457,7 +438,7 @@ class Epos_controller(Epos):
         # check if inputs were supplied
         if not exitFlag:
             self.logInfo('Error: check arguments supplied')
-            return
+            return False
         stateID = self.checkEposState()
         # -----------------------------------------------------------------------
         # Confirm epos is in a suitable state for free movement
@@ -465,7 +446,7 @@ class Epos_controller(Epos):
         # failed to get state?
         if stateID is -1:
             self.logInfo('Error: Unknown state')
-            return
+            return False
         # If epos is not in disable operation at least, motor is expected to be blocked
         if stateID > 4:
             self.logInfo('Not a proper operation mode: {0}'.format(
@@ -473,7 +454,7 @@ class Epos_controller(Epos):
             # shutdown
             if not self.changeEposState('shutdown'):
                 self.logInfo('Failed to change state to shutdown')
-                return
+                return False
             self.logInfo('Sucessfully changed state to shutdown')
 
         maxValue = 0
@@ -503,9 +484,9 @@ class Epos_controller(Epos):
         self.logInfo('MinValue: {0}, MaxValue: {1}, ZeroRef: {2}'.format(
             self.minValue, self.maxValue, self.zeroRef
         ))
-        return
+        return True
 
-    def moveToPosition(self, pFinal):
+    def moveToPosition(self, pFinal, isAngle=False):
         # constants
         # Tmax = 1.7 seems to be the limit before oscillations.
         Tmax = 1.7  # max period for 1 rotation;
@@ -539,9 +520,19 @@ class Epos_controller(Epos):
 
         # max error in quadrature counters
         MAXERROR = 7500
+        # is device calibrated?
         if not self.calibrated:
             self.logInfo('Device is not yet calibrated')
             return False
+        # is position requested an angle?
+        if isAngle:
+            pFinal = self.getQcPosition(pFinal)
+            # if position can not be calculated, alert user.
+            if pFinal is None:
+                self.logInfo('Failed to calculate position value')
+                if not self.changeEposState('shutdown'):
+                    self.logInfo('Failed to change Epos state to shutdown')
+                return False
 
         if(pFinal > self.maxValue or pFinal < self.minValue):
             self.logInfo('Final position exceeds phisical limits')
@@ -557,26 +548,26 @@ class Epos_controller(Epos):
         state = self.checkEposState()
         if state is -1:
             self.logInfo('Error: Unknown state')
-            return
+            return False
 
         if state is 11:
             # perform fault reset
             ok = self.changeEposState('fault reset')
             if not ok:
                 self.logInfo('Error: Failed to change state to fault reset')
-                return
+                return False
 
         # shutdown
         if not self.changeEposState('shutdown'):
             self.logInfo('Failed to change Epos state to shutdown')
-            return
+            return False
         # switch on
         if not self.changeEposState('switch on'):
             self.logInfo('Failed to change Epos state to switch on')
-            return
+            return False
         if not self.changeEposState('enable operation'):
             self.logInfo('Failed to change Epos state to enable operation')
-            return
+            return False
         # -----------------------------------------------------------------------
         # Find remaining constants
         # -----------------------------------------------------------------------
@@ -584,7 +575,7 @@ class Epos_controller(Epos):
         l = abs(pFinal - pStart)
         if l is 0:
             # already in final point
-            return
+            return True
         # do we need  a constant velocity phase?
         if(l > maxL13):
             T2 = 2.0*(l - maxL13)/(maxAcceleration*T1max)
@@ -626,12 +617,10 @@ class Epos_controller(Epos):
                 aux, OK = self.readPositionValue()
                 if not OK:
                     self.logInfo('Failed to request current position')
-                    return
+                    return False
                 outVar = np.append(outVar, [aux])
                 tout = np.append(tout, [time.monotonic()-t0])
                 ref_error = np.append(ref_error, [inVar[-1]-outVar[-1]])
-                # update plot
-                # plotter.update(tin, tout, inVar, outVar, ref_error)
             # not finished
             else:
                 # get reference position for that time
@@ -660,21 +649,35 @@ class Epos_controller(Epos):
                 OK = self.setPositionModeSetting(np.int32(inVar[-1]).item())
                 if not OK:
                     self.logInfo('Failed to set target position')
-                    return
+                    return False
                 aux, OK = self.readPositionValue()
                 if not OK:
                     self.logInfo('Failed to request current position')
-                    return
+                    return False
                 outVar = np.append(outVar, [aux])
                 tout = np.append(tout, [time.monotonic()-t0])
                 ref_error = np.append(ref_error, [inVar[-1]-outVar[-1]])
                 if(abs(ref_error[-1]) > MAXERROR):
                     self.changeEposState('shutdown')
-                    self.logInfo('Something seems wrong, error is growing to mutch!!!')
-                    return
-        # plotter.update(tin, tout, inVar, outVar, ref_error)
+                    self.logInfo(
+                        'Something seems wrong, error is growing to mutch!!!')
+                    return False
         # require sleep?
         time.sleep(0.001)
+
+
+# ---------------------------------------------------------------------------
+# define signal handlers for systemd signals
+# ---------------------------------------------------------------------------
+def signal_handler(signum, frame):
+    global client
+    pdb.set_trace()
+    if signum == signal.SIGINT:
+        logging.info('Received signal INTERRUPT... exiting now')
+    if signum == signal.SIGKILL:
+        logging.info('Received signal KILL... exiting now')
+    client.cleanExit()
+    return
 
 
 def main():
@@ -682,33 +685,52 @@ def main():
 
     Ask user to turn the steering wheel to the extremes and finds the max
     '''
-
+    # ---------------------------------------------------------------------------
+    # Setup arguments section
+    # ---------------------------------------------------------------------------
     import argparse
+    from time import sleep
     if (sys.version_info < (3, 0)):
         print("Please use python version 3")
         return
-
     parser = argparse.ArgumentParser(add_help=True,
-                                     description='Epos controller')
+                                     description='MQTT controller')
     parser.add_argument('--channel', '-c', action='store', default='can0',
-                        type=str, help='Channel to be used', dest='channel')
+                        type=str, help='Can channel to be used', dest='channel')
     parser.add_argument('--bus', '-b', action='store',
                         default='socketcan', type=str, help='Bus type', dest='bus')
     parser.add_argument('--rate', '-r', action='store', default=None,
                         type=int, help='bitrate, if applicable', dest='bitrate')
-    parser.add_argument('--nodeID', action='store', default=1, type=int,
-                        help='Node ID [ must be between 1- 127]', dest='nodeID')
-    parser.add_argument('--objDict', action='store', default=None,
-                        type=str, help='Object dictionary file', dest='objDict')
+    parser.add_argument('--hostname', action='store', default='localhost', type=str,
+                        help='hostname for mqtt broker', dest='hostname')
+    parser.add_argument('--port', '-p', action='store', default=8080, type=int,
+                        help='port for mqtt broker', dest='port')
+    parser.add_argument('--path', action='store', default='/mqtt', type=str,
+                        help='path to be used in mqtt broker', dest='path')
+    parser.add_argument('--transport', action='store', default='websockets', type=str,
+                        help='transport layer used in mqtt broker', dest='transport')
     args = parser.parse_args()
-
-    # set up logging to file - see previous section for more details
+    # ---------------------------------------------------------------------------
+    # Important constants and definitions to be used
+    # ---------------------------------------------------------------------------
+    eposNodeID = 1
+    eposObjDict = None
+    # mqtt constants
+    hostname = args.hostname
+    port = args.port
+    transport = args.transport
+    exitFlag = threading.Event()  # event flag to exit
+    # ---------------------------------------------------------------------------
+    # set up logging to file to used debug level saved to disk
+    # ---------------------------------------------------------------------------
     logging.basicConfig(level=logging.DEBUG,
                         format='[%(asctime)s.%(msecs)03d] [%(name)-20s]: %(levelname)-8s %(message)s',
                         datefmt='%d-%m-%Y %H:%M:%S',
                         filename='mqtt_controller.log',
                         filemode='w')
-    # define a Handler which writes INFO messages or higher
+    # ---------------------------------------------------------------------------
+    # define a Handler which writes INFO messages or higher in console
+    # ---------------------------------------------------------------------------
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
     # set a format which is simpler for console use
@@ -717,24 +739,115 @@ def main():
     console.setFormatter(formatter)
     # add the handler to the root logger
     logging.getLogger('').addHandler(console)
+    # ---------------------------------------------------------------------------
+    # Defines of callback functions
+    # ---------------------------------------------------------------------------
 
-    # event flag to exit
-    exitFlag = threading.Event()
+    def on_message(self, userdata, message):
+        if message.topic == mqttLogTopic:
+            logging.info('Received message: "' + str(message.payload.decode('UTF-8')) + '" on topic '
+                         + message.topic + ' with QoS ' + str(message.qos))
+        else:
+            logging.info("Received message :" + str(message.payload) + " on topic "
+                         + message.topic + " with QoS " + str(message.qos))
 
+    def on_connect(client, userdata, flags, rc):
+        if rc == 0:
+            # sucessfully connected
+            (rc, _) = client.publish(mqttStatusTopic, payload="Connected",
+                                     qos=2, retain=True)
+            if rc is mqtt.MQTT_ERR_SUCCESS:
+                # now add mqttLog to root logger to enable it
+                logging.getLogger('').addHandler(mqttLogger)
+            else:
+                logging.info('Unexpected result on publish: rc={0}'.format(rc))
+        else:
+            logging.info("Failed to connect to server")
+        return
+
+    def cleanExit():
+        '''Handle exiting request
+
+        Before exiting, send a message to mqtt broker to correctly signal the 
+        disconnection.
+        The function must be appended as method to mqtt client object.
+        '''
+        (rc, _) = client.publish(mqttCanopenStatus, payload="Disconnected",
+                                 qos=2, retain=True)
+        if rc is not mqtt.MQTT_ERR_SUCCESS:
+            logging.info('Failed to publish on exit: mqttCanopenStatus')
+        (rc, _) = client.publish(mqttStatusTopic, payload="Disconnected",
+                                 qos=2, retain=True)
+        if rc is not mqtt.MQTT_ERR_SUCCESS:
+            logging.info('Failed to publish on exit: mqttStatusTopic')
+        sleep(1)
+        # wait for all messages are published before disconnect
+        while(len(client._out_messages)):
+            sleep(0.01)
+        client.disconnect()
+        return
+    # ---------------------------------------------------------------------------
+    # end of callback defines
+    # ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # mqtt client configure
+    # ---------------------------------------------------------------------------
+    client = mqtt.Client(protocol=protocol, transport=transport)
+    client.will_set(mqttStatusTopic, payload="Disconnected",
+                    qos=2, retain=True)
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.cleanExit = cleanExit
+    # ---------------------------------------------------------------------------
+    # setup mqtt_controller logger to transmit logging messages via mqtt but do
+    # not activate it. Activate only when sucessfull connected to broker.
+    # ---------------------------------------------------------------------------
+    mqttLogger = MQTTHandler(client, mqttLogTopic)
+    # save all levels
+    mqttLogger.setLevel(logging.INFO)
+    mqttLogger.setFormatter(logging.Formatter(fmt='[%(asctime)s.%(msecs)03d] [%(name)-20s]: %(levelname)-8s %(message)s',
+                                              datefmt='%d-%m-%Y %H:%M:%S'))
+    #---------------------------------------------------------------------------
+    noFaults = True
+    try:
+        client.connect(hostname, port=port)
+        client.loop_start()
+
+    except Exception as e:
+        logging.info('Exception caught:{0} - {1}'.format(str(e), ))
+        noFaults = False
+    finally:
+        if not noFaults:
+            client.loop_stop(force=True)
+            logging.info('Failed to connect to broker...Exiting')
+            return
+    # ---------------------------------------------------------------------------
     # TODO: in order to be able to use EPOS with the SINAMCIS, network must be shared
     # For now, create the network from scratch
+    # ---------------------------------------------------------------------------
     network = canopen.Network()
+    noFaults = True
+    sleep(1)
     try:
         network.connect(channel=args.channel, bustype=args.bus)
+        # if no exception, connection is made. Signal in mqtt.
+        client.publish(mqttCanopenStatus, payload='Connected',
+                       qos=2, retain=True)
     except Exception as e:
         logging.info('Exception caught:{0}'.format(str(e)))
+        noFaults = False
+    finally:
+        if not noFaults:
+            logging.info('Failed to connect to can network...Exiting')
+            client.cleanExit()
+            return
     # instanciate object
     epos = Epos_controller(_network=network)
     # declare threads
     eposThread = threading.Thread(name="EPOS", target=epos.startCalibration,
                                        kwargs={'exitFlag': exitFlag})
 
-    if not (epos.begin(args.nodeID, objectDictionary=args.objDict)):
+    if not (epos.begin(eposNodeID, objectDictionary=eposObjDict)):
         logging.info('Failed to begin connection with EPOS device')
         logging.info('Exiting now')
         return
@@ -775,66 +888,57 @@ def main():
     print('Done!')
     print("---------------------------------------------")
 
-    # ---------------------------------------------------------------------------
-    # Menu definitions
-    # ---------------------------------------------------------------------------
-    mainMenuSaveQC = Button("Save qc to file", 1)
-    mainMenuReadQC = Button("Follow qc from file", 2)
-    mainMenuMove = Button("Move to position", 3)
-    mainMenuShowConfig = Button("Show config", 4)
-    mainMenuQuit = Button("Quit", 0)
-    mainMenuButtons = [mainMenuSaveQC,
-                       mainMenuReadQC, mainMenuMove, mainMenuShowConfig, mainMenuQuit]
-    mainMenu = Menu("Main menu", mainMenuButtons)
+
     stopCycle = False
     try:
         while not stopCycle:
-            val = mainMenu.display()
-            if val is not None:
-                if val is 0:
-                    # exit program
-                    stopCycle = True
-                elif val is 1:
-                    # save qc to a file to be used later
-                    eposThread = threading.Thread(name="Save QC",
-                                                  target=epos.saveToFile,
-                                                  kwargs={'exitFlag': exitFlag})
-                    eposThread.start()
-                    print("Recording to file.")
-                    input("Press Enter when done...\n")
-                    exitFlag.set()
-                    eposThread.join()
-                elif val is 2:
-                    # get latest file in data dir
-                    directory = pathlib.Path('./data/')
-                    _, file_path = max((f.stat().st_mtime, f)
-                                       for f in directory.iterdir())
-                    epos.readFromFile(str(file_path))
-                elif val is 3:
-                    try:
-                        x = int(input("Enter desired position [qc]: "))
-                        print(
-                            '-----------------------------------------------------------')
-                        print('Moving to position {0:+16,}'.format(x))
-                        epos.moveToPosition(x)
-                        print('done')
-                        print(
-                            '-----------------------------------------------------------')
-                        # shutdown
-                        if not epos.changeEposState('shutdown'):
-                            logging.info(
-                                '[Main] Failed to change Epos state to shutdown')
-                    except KeyboardInterrupt as e:
-                        logging.info(
-                            '[Main] Got execption {0}... exiting now'.format(e))
-                elif val is 4:
-                    print("Show configurations:")
-                    epos.printPositionControlParameters()
-                    epos.printMotorConfig()
-                    epos.printSensorConfig()
-                    input("Press any key to continue...\n")
-                else:
-                    pass
+            sleep(0.1)
+            # val = mainMenu.display()
+            # if val is not None:
+            #     if val is 0:
+            #         # exit program
+            #         stopCycle = True
+            #     elif val is 1:
+            #         # save qc to a file to be used later
+            #         eposThread = threading.Thread(name="Save QC",
+            #                                       target=epos.saveToFile,
+            #                                       kwargs={'exitFlag': exitFlag})
+            #         eposThread.start()
+            #         print("Recording to file.")
+            #         input("Press Enter when done...\n")
+            #         exitFlag.set()
+            #         eposThread.join()
+            #     elif val is 2:
+            #         # get latest file in data dir
+            #         directory = pathlib.Path('./data/')
+            #         _, file_path = max((f.stat().st_mtime, f)
+            #                            for f in directory.iterdir())
+            #         epos.readFromFile(str(file_path), useAngle=True)
+            #     elif val is 3:
+            #         try:
+            #             x = int(input("Enter desired position [qc]: "))
+            #             print(
+            #                 '-----------------------------------------------------------')
+            #             print('Moving to position {0:+16,}'.format(x))
+            #             epos.moveToPosition(x)
+            #             print('done')
+            #             print(
+            #                 '-----------------------------------------------------------')
+            #             # shutdown
+            #             if not epos.changeEposState('shutdown'):
+            #                 logging.info(
+            #                     '[Main] Failed to change Epos state to shutdown')
+            #         except KeyboardInterrupt as e:
+            #             logging.info(
+            #                 '[Main] Got execption {0}... exiting now'.format(e))
+            #     elif val is 4:
+            #         print("Show configurations:")
+            #         epos.printPositionControlParameters()
+            #         epos.printMotorConfig()
+            #         epos.printSensorConfig()
+            #         input("Press any key to continue...\n")
+            #     else:
+            #         pass
 
     except KeyboardInterrupt as e:
         logging.info('[Main] Got execption {0}... exiting now'.format(e))
