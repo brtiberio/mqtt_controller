@@ -468,10 +468,11 @@ class Epos_controller(Epos):
             if not OK:
                 self.logDebug('Failed to request current position')
                 numFails = numFails + 1
-            if currentValue > maxValue:
-                maxValue = currentValue
-            if currentValue < minValue:
-                minValue = currentValue
+            else:
+                if currentValue > maxValue:
+                    maxValue = currentValue
+                if currentValue < minValue:
+                    minValue = currentValue
             # sleep?
             time.sleep(0.01)
 
@@ -812,7 +813,6 @@ def main():
     try:
         client.connect(hostname, port=port)
         client.loop_start()
-
     except Exception as e:
         logging.info('Exception caught:{0} - {1}'.format(str(e), ))
         noFaults = False
