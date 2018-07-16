@@ -863,6 +863,8 @@ def main():
         print("Please move steering wheel to extreme positions to calibrate...")
         input("Press Enter when done...\n")
     except KeyboardInterrupt as e:
+        exitFlag.set()
+        eposThread.join()
         logging.warning('[Main] Got execption {0}... exiting now'.format(e))
         return
 
@@ -945,6 +947,8 @@ def main():
     finally:
         exitFlag.set()  # in case any thread is still working
         epos.disconnect()
+        client.cleanExit()
+        client.loop_stop(force=True)
     return
 
 
