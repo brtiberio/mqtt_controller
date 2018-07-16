@@ -840,6 +840,7 @@ def main():
         if not noFaults:
             logging.info('Failed to connect to can network...Exiting')
             client.cleanExit()
+            client.loop_stop(force=True)
             return
     # instanciate object
     epos = Epos_controller(_network=network)
@@ -850,6 +851,10 @@ def main():
     if not (epos.begin(eposNodeID, objectDictionary=eposObjDict)):
         logging.info('Failed to begin connection with EPOS device')
         logging.info('Exiting now')
+        client.publish(mqttCanopenStatus, payload='Connected',
+                       qos=2, retain=True)
+        client.cleanExit()
+        client.loop_stop(force=True)
         return
     # emcy messages handles
     epos.node.emcy.add_callback(epos.emcyErrorPrint)
@@ -866,15 +871,27 @@ def main():
         exitFlag.set()
         eposThread.join()
         logging.warning('[Main] Got execption {0}... exiting now'.format(e))
+        client.publish(mqttCanopenStatus, payload='Connected',
+                       qos=2, retain=True)
+        client.cleanExit()
+        client.loop_stop(force=True)
         return
 
     exitFlag.set()
     eposThread.join()
     if(epos.calibrated == -1):
         logging.info("[Main] Failed to perform calibration")
+        client.publish(mqttCanopenStatus, payload='Connected',
+                       qos=2, retain=True)
+        client.cleanExit()
+        client.loop_stop(force=True)
         return
     if(epos.calibrated == 0):
         logging.info("[Main] Calibration not yet done")
+        client.publish(mqttCanopenStatus, payload='Connected',
+                       qos=2, retain=True)
+        client.cleanExit()
+        client.loop_stop(force=True)
         return
     # reset event()
     exitFlag.clear()
@@ -947,6 +964,8 @@ def main():
     finally:
         exitFlag.set()  # in case any thread is still working
         epos.disconnect()
+        client.publish(mqttCanopenStatus, payload='Connected',
+                       qos=2, retain=True)
         client.cleanExit()
         client.loop_stop(force=True)
     return
