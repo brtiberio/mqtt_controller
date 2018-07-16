@@ -671,12 +671,11 @@ class Epos_controller(Epos):
 # define signal handlers for systemd signals
 # ---------------------------------------------------------------------------
 def signal_handler(signum, frame):
-    global client
     pdb.set_trace()
     if signum == signal.SIGINT:
         logging.info('Received signal INTERRUPT... exiting now')
-    if signum == signal.SIGKILL:
-        logging.info('Received signal KILL... exiting now')
+    if signum == signal.SIGTERM:
+        logging.info('Received signal TERM... exiting now')
     client.cleanExit()
     return
 
@@ -769,7 +768,7 @@ def main():
     def cleanExit():
         '''Handle exiting request
 
-        Before exiting, send a message to mqtt broker to correctly signal the 
+        Before exiting, send a message to mqtt broker to correctly signal the
         disconnection.
         The function must be appended as method to mqtt client object.
         '''
@@ -793,6 +792,7 @@ def main():
     # ---------------------------------------------------------------------------
     # mqtt client configure
     # ---------------------------------------------------------------------------
+    global client
     client = mqtt.Client(protocol=protocol, transport=transport)
     client.will_set(mqttStatusTopic, payload="Disconnected",
                     qos=2, retain=True)
@@ -814,7 +814,7 @@ def main():
         client.connect(hostname, port=port)
         client.loop_start()
     except Exception as e:
-        logging.info('Exception caught:{0} - {1}'.format(str(e), ))
+        logging.info('Connection failed: {0}'.format(str(e)))
         noFaults = False
     finally:
         if not noFaults:
