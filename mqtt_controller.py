@@ -43,14 +43,16 @@ from EPOS_Canopen.epos import Epos
 protocol = mqtt.MQTTv311
 # mqtt topics to be used with epos
 protocol = mqtt.MQTTv311
-eposTopic = 'VIENA/steering/'                 # base topic
-eposAngle = eposTopic + 'angle'               # current angle
-mqttControlleTopic = 'VIENA/mqttController/'  # controller base topic
-mqttLogTopic = mqttControlleTopic + 'logger'  # controller logger topic
+eposTopic = 'VIENA/steering/'                     # base topic
+eposTopicAngle = eposTopic + 'angle'              # current angle
+eposTopicPID = eposTopic + 'pid'                  # pid settings topic
+eposTopicCalibration = eposTopic + 'calibration'  # calibration topic
+mqttControllerTopic = 'VIENA/mqttController/'     # controller base topic
+mqttLogTopic = mqttControllerTopic + 'logger'     # controller logger topic
 # controller connection status
-mqttStatusTopic = mqttControlleTopic + 'connectStatus'
+mqttStatusTopic = mqttControllerTopic + 'connectStatus'
 # controller canopen connection status
-mqttCanopenStatus = mqttControlleTopic + 'canopenStatus'
+mqttCanopenStatus = mqttControllerTopic + 'canopenStatus'
 
 
 class MQTTHandler(logging.Handler):
