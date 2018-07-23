@@ -33,9 +33,9 @@ import os
 import pathlib
 import csv
 from EPOS_Canopen.epos import Epos
-# --------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Pycharm remote debug settings
-# --------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # import pydevd
 
 # pydevd.settrace("10.42.0.1", port=8000, stdoutToServer=True, stderrToServer=True)
@@ -44,8 +44,8 @@ from EPOS_Canopen.epos import Epos
 # shortcut for clear console
 
 
-def clear():
-    os.system('cls' if os.name == 'nt' else 'clear')
+# def clear():
+#     os.system('cls' if os.name == 'nt' else 'clear')
 
 
 class Menu(object):
@@ -190,7 +190,7 @@ class Epos_controller(Epos):
         The following fields will be recorded
 
         +-------+----------+-------+
-        | time  | position | Angle |
+        | time  | position | angle |
         +-------+----------+-------+
         | t1    | p1       | a1    |
         +-------+----------+-------+
@@ -220,15 +220,16 @@ class Epos_controller(Epos):
         # make sure is clear.
         if exitFlag.isSet():
             exitFlag.clear()
-        # -----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
         # Confirm epos is in a suitable state for free movement
-        # -----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
         stateID = self.checkEposState()
         # failed to get state?
         if stateID is -1:
             self.logInfo('Error: Unknown state')
             return
-        # If epos is not in disable operation at least, motor is expected to be blocked
+        # If epos is not in disable operation at least,
+        # motor is expected to be blocked
         if stateID > 4:
             self.logInfo('Not a proper operation mode: {0}'.format(
                 self.state[stateID]))
@@ -779,6 +780,9 @@ def main():
     if numFails is 5:
         logging.info('Failed to contact EPOS... is it connected? Exiting')
         return
+    # --------------------------------------------------------------------------
+    # change PID settings
+    # --------------------------------------------------------------------------
     # default values were 52, 1, 15
     # last used values 54, 1, 3
     epos.setPositionControlParameters(pGain=250, iGain=1, dGain=50)
