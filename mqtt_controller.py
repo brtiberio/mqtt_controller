@@ -29,7 +29,6 @@ import gc
 
 import numpy as np
 import canopen
-import os
 import pathlib
 import csv
 from EPOS_Canopen.epos import Epos
