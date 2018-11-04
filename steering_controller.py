@@ -46,7 +46,8 @@ from EPOS_Canopen.epos import Epos
 # def clear():
 #     os.system('cls' if os.name == 'nt' else 'clear')
 
-
+# This code section is based on
+# https://codereview.stackexchange.com/questions/32207/console-user-main-menu
 class Menu(object):
     """Base class for the menu"""
 
@@ -137,7 +138,7 @@ class Epos_controller(Epos):
     def getQcPosition(self, delta):
         """ Converts angle of wheels to qc
 
-        Given the desired angle of wheels, in degrees of the bicicle model of car,
+        Given the desired angle of wheels, in degrees of the bicycle model of car,
         convert the requested value to qc position of steering wheel using the
         calibration performed at beginning.
 
@@ -165,10 +166,9 @@ class Epos_controller(Epos):
         return int(val)
 
     def getDeltaAngle(self, qc):
-        """ Converts qc of steering wheel to angle of wheels
+        """ Converts qc of steering wheel to angle of wheel
 
-        Given the desired qc steering position, in degrees of the bicicle model of car,
-        convert the requested value to angle in degrees.
+        Given the desired qc steering position, convert the requested value to angle of bicycle model in degrees.
 
         Args:
             qc: an int with desired qc position of steering wheel.
@@ -198,7 +198,7 @@ class Epos_controller(Epos):
         | tN    | pN       | aN    |
         +-------+----------+-------+
 
-        An adicional file with same name but with ext TXT will have the current
+        An additional file with same name but with ext TXT will have the current
         calibration parameters
 
          * minValue
@@ -287,7 +287,7 @@ class Epos_controller(Epos):
         """Read qc positions from file and follow them
 
         The file must contain time and position in quadrature positions of steering
-        wheel and angle (degrees) of "center" wheel of bicicle model in a csv style
+        wheel and angle (degrees) of "center" wheel of bicycle model in a csv style
 
         +-------+----------+-------+
         | time  | position | angle |
@@ -499,6 +499,19 @@ class Epos_controller(Epos):
         return
 
     def moveToPosition(self, pFinal, isAngle=False):
+        """Move to desired position.
+
+        Plan and apply a motion profile to reduce with low jerk, max speed, max acceleration
+        to avoid abrupt variations.
+        The function implement the algorithm developed in [1]_
+
+        Args:
+            pFinal: desired position.
+            isAngle: a boolean, true if pFinal is an angle or false if is qc value
+        :return:
+
+        .. [1] Li, Huaizhong & M Gong, Z & Lin, Wei & Lippa, T. (2007). Motion profile planning for reduced jerk and vibration residuals. 10.13140/2.1.4211.2647.
+        """
         # constants
         # Tmax = 1.7 seems to be the limit before oscillations.
         Tmax = 0.2  # max period for 1 rotation;
@@ -626,7 +639,7 @@ class Epos_controller(Epos):
         pi = np.pi
         cos = np.cos
         time.sleep(0.01)
-
+        # choose monotonic for precision
         t0 = time.monotonic()
         numFails = 0
         while flag and not self.errorDetected:
@@ -637,6 +650,9 @@ class Epos_controller(Epos):
                 flag = False
                 inVar = np.append(inVar, [pFinal])
                 self.setPositionModeSetting(pFinal)
+                # reading a position takes time, as so, it should be enough
+                # for it reaches end value since steps are expected to be
+                # small
                 aux, OK = self.readPositionValue()
                 if not OK:
                     self.logInfo('Failed to request current position')
@@ -692,12 +708,13 @@ class Epos_controller(Epos):
             # require sleep?
             time.sleep(0.005)
         self.logInfo('Finished with {0} fails'.format(numFails))
+        return True
 
 
 def main():
-    """Perform steering wheel calibration.
+    """EPOS controller tester.
 
-    Ask user to turn the steering wheel to the extremes and finds the max
+    Simple program to perform a few tests with EPOS device in the car
     """
 
     import argparse
