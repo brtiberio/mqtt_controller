@@ -28,10 +28,9 @@ import signal
 import time
 import numpy as np
 import canopen
-import os
 import pathlib
 import csv
-import pdb
+
 
 # import queue
 import paho.mqtt.client as mqtt
@@ -81,9 +80,10 @@ class MQTTHandler(logging.Handler):
         #                will=self.will, auth=self.auth, tls=self.tls,
         #                protocol=self.protocol, transport=self.transport)
         self.client.publish(self.topic, payload=msg,
-                       qos=self.qos, retain=self.retain)
+                            qos=self.qos, retain=self.retain)
 
-class Epos_controller(Epos):
+
+class EposController(Epos):
     maxFollowingError = 7500
     minValue = 0  # type: int
     maxValue = 0  # type: int
@@ -95,22 +95,61 @@ class Epos_controller(Epos):
     minAngle = -maxAngle
     dataDir = "./data/"  # type: str
     errorDetected = False  # type: bool
+    emcy_descriptions = [
+        # Code   Description
+        (0x0000, "Error Reset / No Error"),
+        (0x1000, "Generic Error"),
+        (0x2310, "Over Current Error"),
+        (0x3210, "Over Voltage Error"),
+        (0x3220, "Under Voltage"),
+        (0x4210, "Over Temperature"),
+        (0x5113, "Supply Voltage (+5V) too low"),
+        (0x6100, "Internal Software Error"),
+        (0x6320, "Software Parameter Error"),
+        (0x7320, "Sensor Position Error"),
+        (0x8110, "CAN Overrun Error (Objects lost)"),
+        (0x8111, "CAN Overrun Error"),
+        (0x8120, "CAN Passive Mode Error"),
+        (0x8130, "CAN Life Guard Error"),
+        (0x8150, "CAN Transmit COB-ID collision"),
+        (0x81FD, "CAN Bus Off"),
+        (0x81FE, "CAN Rx Queue Overrun"),
+        (0x81FF, "CAN Tx Queue Overrun"),
+        (0x8210, "CAN PDO length Error"),
+        (0x8611, "Following Error"),
+        (0x9000, "External Error"),
+        (0xF001, "Hall Sensor Error"),
+        (0xFF02, "Index Processing Error"),
+        (0xFF03, "Encoder Resolution Error"),
+        (0xFF04, "Hallsensor not found Error"),
+        (0xFF06, "Negative Limit Error"),
+        (0xFF07, "Positive Limit Error"),
+        (0xFF08, "Hall Angle detection Error"),
+        (0xFF09, "Software Position Limit Error"),
+        (0xFF0A, "Position Sensor Breach"),
+        (0xFF0B, "System Overloaded")
+    ]
 
-    def emcyErrorPrint(self, EmcyError):
+    def emcy_error_print(self, emcy_error):
         """Print any EMCY Error Received on CAN BUS
         """
-        logging.info('[{0}] Got an EMCY message: {1}'.format(
-            sys._getframe().f_code.co_name, EmcyError))
-        if EmcyError.code is 0:
+        if emcy_error.code is 0:
             self.errorDetected = False
         else:
+            for code, description in self.emcy_descriptions:
+                if emcy_error.code == code:
+                    self.errorDetected = True
+                    self.log_info("Got an EMCY message: Code: 0x{0:04X} {1}".format(code, description))
+                    return
+            # if no description was found, print generic info
             self.errorDetected = True
+            self.log_info('Got an EMCY message: {0}'.format(emcy_error))
         return
 
-    def getQcPosition(self, delta):
+    def get_qc_position(self, delta):
         """ Converts angle of wheels to qc
 
-        Given the desired angle of wheels, in degrees of the bicicle model of car,
+        Given the desired angle of wheels, in degrees of the bicycle model of car,
         convert the requested value to qc position of steering wheel using the
         calibration performed at beginning.
 
@@ -120,15 +159,15 @@ class Epos_controller(Epos):
             int: a rounded integer with qc position estimated or None if not possible
         """
         if not self.calibrated:
-            self.logInfo('Device is not yet calibrated')
+            self.log_info('Device is not yet calibrated')
             return None
         if delta > self.maxAngle:
-            self.logInfo('Angle exceeds limits: maxAngle: {0}\t requested: {1}'.format(
+            self.log_info('Angle exceeds limits: maxAngle: {0}\t requested: {1}'.format(
                 self.maxAngle,
                 delta))
             return None
         if delta < self.minAngle:
-            self.logInfo('Angle exceeds limits: minAngle: {0}\t requested: {1}'.format(
+            self.log_info('Angle exceeds limits: minAngle: {0}\t requested: {1}'.format(
                 self.minAngle,
                 delta))
             return None
@@ -137,11 +176,10 @@ class Epos_controller(Epos):
         val = round(val)
         return int(val)
 
-    def getDeltaAngle(self, qc):
-        """ Converts qc of steering wheel to angle of wheels
+    def get_delta_angle(self, qc):
+        """ Converts qc of steering wheel to angle of wheel
 
-        Given the desired qc steering position, in degrees of the bicicle model of car,
-        convert the requested value to angle in degrees.
+        Given the desired qc steering position, convert the requested value to angle of bicycle model in degrees.
 
         Args:
             qc: an int with desired qc position of steering wheel.
@@ -149,20 +187,20 @@ class Epos_controller(Epos):
             double: estimated angle of wheels in degrees or None if not possible
         """
         if not self.calibrated:
-            self.logInfo('Device is not yet calibrated')
+            self.log_info('Device is not yet calibrated')
             return None
 
         # perform calculations y = mx + b and solve to x
         delta = (qc - self.zeroRef) * self.QC_TO_DELTA
         return float(delta)
 
-    def saveToFile(self, filename=None, exitFlag=None):
+    def save_to_file(self, filename=None, exitFlag=None):
         """Record qc positions into a csv file
 
         The following fields will be recorded
 
         +-------+----------+-------+
-        | time  | position | Angle |
+        | time  | position | angle |
         +-------+----------+-------+
         | t1    | p1       | a1    |
         +-------+----------+-------+
@@ -171,7 +209,7 @@ class Epos_controller(Epos):
         | tN    | pN       | aN    |
         +-------+----------+-------+
 
-        An adicional file with same name but with ext TXT will have the current
+        An additional file with same name but with ext TXT will have the current
         calibration parameters
 
          * minValue
@@ -187,27 +225,28 @@ class Epos_controller(Epos):
         """
         # check if inputs were supplied
         if not exitFlag:
-            self.logInfo('Error: exitFlag must be supplied')
+            self.log_info('Error: exitFlag must be supplied')
             return
         # make sure is clear.
         if exitFlag.isSet():
             exitFlag.clear()
-        # -----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
         # Confirm epos is in a suitable state for free movement
-        # -----------------------------------------------------------------------
-        stateID = self.checkEposState()
+        # ----------------------------------------------------------------------
+        stateID = self.check_state()
         # failed to get state?
         if stateID is -1:
-            self.logInfo('Error: Unknown state')
+            self.log_info('Error: Unknown state')
             return
-        # If epos is not in disable operation at least, motor is expected to be blocked
+        # If epos is not in disable operation at least,
+        # motor is expected to be blocked
         if stateID > 4:
-            self.logInfo('Not a proper operation mode: {0}'.format(
+            self.log_info('Not a proper operation mode: {0}'.format(
                 self.state[stateID]))
-            if not self.changeEposState('shutdown'):
-                self.logInfo('Failed to change Epos state to shutdown')
+            if not self.change_state('shutdown'):
+                self.log_info('Failed to change Epos state to shutdown')
                 return
-            self.logInfo('Successfully changed Epos state to shutdown')
+            self.log_info('Successfully changed Epos state to shutdown')
         # all ok, proceed
         if not filename:
             filename = time.asctime()
@@ -236,30 +275,30 @@ class Epos_controller(Epos):
         # start requesting for positions of sensor
         # -----------------------------------------------------------------------
         # var to store number of fails
-        numFails = 0
+        num_fails = 0
         # get current time
         t0 = time.monotonic()
         while not exitFlag.isSet():
-            currentValue, OK = self.readPositionValue()
+            current_value, ok = self.read_position_value()
             tOut = time.monotonic() - t0
-            if not OK:
-                self.logInfo('Failed to request current position')
-                numFails = numFails + 1
+            if not ok:
+                self.log_info('Failed to request current position')
+                num_fails = num_fails + 1
             else:
-                writer.writerow({'time': tOut, 'position': currentValue,
-                                 'angle': self.getDeltaAngle(currentValue)})
+                writer.writerow({'time': tOut, 'position': current_value,
+                                 'angle': self.get_delta_angle(current_value)})
             # sleep?
             time.sleep(0.01)
 
-        self.logInfo('Finishing collecting data with {0} fail readings'.format(
-            numFails))
+        self.log_info('Finishing collecting data with {0} fail readings'.format(
+            num_fails))
         my_file.close()
 
-    def readFromFile(self, filename=None, useAngle=False):
+    def read_from_file(self, filename=None, use_angle=False):
         """Read qc positions from file and follow them
 
         The file must contain time and position in quadrature positions of steering
-        wheel and angle (degrees) of "center" wheel of bicicle model in a csv style
+        wheel and angle (degrees) of "center" wheel of bicycle model in a csv style
 
         +-------+----------+-------+
         | time  | position | angle |
@@ -278,56 +317,56 @@ class Epos_controller(Epos):
 
         Args:
             filename: csv file to be read.
-            useAngle: use the angle value instead of position.
+            use_angle: use the angle value instead of position.
         """
-        self.logInfo('Filename is {0}'.format(filename))
+        self.log_info('Filename is {0}'.format(filename))
         # get current state of epos
-        state = self.checkEposState()
+        state = self.check_state()
         if state is -1:
-            self.logInfo('Error: Unknown state')
+            self.log_info('Error: Unknown state')
             return
 
         if state is 11:
             # perform fault reset
-            if not self.changeEposState('fault reset'):
-                self.logInfo('Error: Failed to change state to fault reset')
+            if not self.change_state('fault reset'):
+                self.log_info('Error: Failed to change state to fault reset')
                 return
         # get current op mode
-        opMode, Ok = self.readOpMode()
-        if not Ok:
+        op_mode, ok = self.read_op_mode()
+        if not ok:
             logging.info('Failed to request current OP Mode')
             return
         # show current op Mode
-        self.logInfo('Current OP Mode is {0}'.format(
-            self.opModes[opMode]
+        self.log_info('Current OP Mode is {0}'.format(
+            self.opModes[op_mode]
         ))
         # check if mode is position
-        if opMode is not -1:
-            if not self.setOpMode(-1):
-                self.logInfo('Failed to change opMode to {0}'.format(
+        if op_mode is not -1:
+            if not self.set_op_mode(-1):
+                self.log_info('Failed to change op_mode to {0}'.format(
                     self.opModes[-1]
                 ))
                 return
             else:
-                self.logInfo('OP Mode is now {0}'.format(
+                self.log_info('OP Mode is now {0}'.format(
                     self.opModes[-1]
                 ))
         # shutdown
-        if not self.changeEposState('shutdown'):
-            self.logInfo('Failed to change Epos state to shutdown')
+        if not self.change_state('shutdown'):
+            self.log_info('Failed to change Epos state to shutdown')
             return
         # switch on
-        if not self.changeEposState('switch on'):
-            self.logInfo('Failed to change Epos state to switch on')
+        if not self.change_state('switch on'):
+            self.log_info('Failed to change Epos state to switch on')
             return
-        if not self.changeEposState('enable operation'):
-            self.logInfo('Failed to change Epos state to enable operation')
+        if not self.change_state('enable operation'):
+            self.log_info('Failed to change Epos state to enable operation')
             return
 
         # check if file exist
         my_file = pathlib.Path(filename)
         if not my_file.exists():
-            self.logInfo('File does not exist: {0}'.format(
+            self.log_info('File does not exist: {0}'.format(
                 my_file))
             return
 
@@ -336,78 +375,78 @@ class Epos_controller(Epos):
             reader = csv.DictReader(csvfile, delimiter=',')
             I = 0  # line number
             for row in reader:
-                tTarget = float(row['time'])  # type: float
-                if useAngle:
+                t_target = float(row['time'])  # type: float
+                if use_angle:
                     angle = float(row['angle'])
                     if angle is not None:  # if angle exceed limits, do not update
-                        position = self.getQcPosition(angle)
+                        position = self.get_qc_position(angle)
                 else:
                     position = int(row['position'])
 
                 # align to the first position before starting
                 if I is 0:
-                    self.moveToPosition(position)
+                    self.move_to_position(position)
                     try:
                         input("Press any key when ready...")
                     except KeyboardInterrupt as e:
-                        self.logInfo('Got exception {0}... exiting now'.format(e))
+                        self.log_info('Got exception {0}... exiting now'.format(e))
                         # shutdown
-                        if not self.changeEposState('shutdown'):
-                            self.logInfo('Failed to change Epos state to shutdown')
+                        if not self.change_state('shutdown'):
+                            self.log_info('Failed to change Epos state to shutdown')
                         return
-                    numFails = 0
+                    num_fails = 0
                     t0 = time.monotonic()
-                    lastRead = 0
+                    last_read = 0
                 else:
-                    # if is not the first position but tOut is not yeat tTarget
+                    # if is not the first position but tOut is not yeat t_target
                     # sleep
                     # skip to next step?
                     while True:
                         tOut = time.monotonic() - t0
                         # is time to send new values?
-                        if tOut > tTarget:
+                        if tOut > t_target:
                             # time to update
-                            if not self.setPositionModeSetting(position):
-                                numFails = numFails + 1
+                            if not self.set_position_mode_setting(position):
+                                num_fails = num_fails + 1
                             break
                         # if we are not sending new targets, request current value to see the error
-                        if tOut - lastRead > 0.051:
-                            aux, OK = self.readPositionValue()
+                        if tOut - last_read > 0.051:
+                            aux, OK = self.read_position_value()
                             if not OK:
-                                self.logInfo('Failed to request current position')
-                                numFails = numFails + 1
+                                self.log_info('Failed to request current position')
+                                num_fails = num_fails + 1
                             else:
                                 # does error have grown to much?
                                 ref_error = position - aux
                                 if abs(ref_error) > self.maxFollowingError:
-                                    self.logInfo(
+                                    self.log_info(
                                         'Error is growing to much. Something seems wrong')
                                     print('time={0:+08.3f}\tIn={1:+05}\tOut={2:+05}\tError={3:+05}'.format(
                                         tOut, position, aux, ref_error))
-                                    if not self.changeEposState('shutdown'):
-                                        self.logInfo(
+                                    if not self.change_state('shutdown'):
+                                        self.log_info(
                                             'Failed to change Epos state to shutdown')
                                     return
                                 # for debug print every time on each cycle
                                 print('time={0:+08.3f}\tIn={1:+05}\tOut={2:+05}\tError={3:+05}'.format(
                                     tOut, position, aux, ref_error))
-                            lastRead = tOut
+                            last_read = tOut
                         time.sleep(0.001)
                 I = I + 1  # increase line number
                 if self.errorDetected:
                     break
 
             if self.errorDetected:
-                self.logInfo('Exited with emergency error')
+                self.log_info('Exited with emergency error')
             else:
-                self.logInfo('All done: Time to process all vars was {0} seconds with {1} fail readings'.format(
-                    time.monotonic() - t0, numFails))
-                self.logInfo('Expected time to process {0}'.format(tTarget))
-            if not self.changeEposState('shutdown'):
-                self.logInfo('Failed to change Epos state to shutdown')
+                self.log_info('All done: Time to process all vars was {0} seconds with {1} fail readings'.format(
+                    time.monotonic() - t0, num_fails))
+                self.log_info('Expected time to process {0}'.format(t_target))
+            if not self.change_state('shutdown'):
+                self.log_info('Failed to change Epos state to shutdown')
             return
 
-    def startCalibration(self, exitFlag=None):
+    def start_calibration(self, exit_flag=None):
         """Perform steering wheel calibration
 
         This function is expected to be run on a thread in order to find the limits
@@ -415,62 +454,75 @@ class Epos_controller(Epos):
         of wheels.
 
         Args:
-            exitFlag: threading.Event() to signal the finish of acquisition
+            exit_flag: threading.Event() to signal the finish of acquisition
 
         """
         # check if inputs were supplied
-        if not exitFlag:
-            self.logInfo('Error: check arguments supplied')
+        if not exit_flag:
+            self.log_info('Error: check arguments supplied')
             return
-        stateID = self.checkEposState()
+        state_id = self.check_state()
         # -----------------------------------------------------------------------
         # Confirm epos is in a suitable state for free movement
         # -----------------------------------------------------------------------
         # failed to get state?
-        if stateID is -1:
-            self.logInfo('Error: Unknown state')
+        if state_id is -1:
+            self.log_info('Error: Unknown state')
             return
         # If epos is not in disable operation at least, motor is expected to be blocked
-        if stateID > 4:
-            self.logInfo('Not a proper operation mode: {0}'.format(
-                self.state[stateID]))
+        if state_id > 4:
+            self.log_info('Not a proper operation mode: {0}'.format(
+                self.state[state_id]))
             # shutdown
-            if not self.changeEposState('shutdown'):
-                self.logInfo('Failed to change state to shutdown')
+            if not self.change_state('shutdown'):
+                self.log_info('Failed to change state to shutdown')
                 return
-            self.logInfo('Successfully changed state to shutdown')
+            self.log_info('Successfully changed state to shutdown')
 
-        maxValue = 0
-        minValue = 0
-        numFails = 0
+        max_value = 0
+        min_value = 0
+        num_fails = 0
         # -----------------------------------------------------------------------
         # start requesting for positions of sensor
         # -----------------------------------------------------------------------
-        while not exitFlag.isSet():
-            currentValue, OK = self.readPositionValue()
-            if not OK:
-                self.logDebug('Failed to request current position')
-                numFails = numFails + 1
+        while not exit_flag.isSet():
+            current_value, ok = self.read_position_value()
+            if not ok:
+                self.log_debug('Failed to request current position')
+                num_fails = num_fails + 1
             else:
-                if currentValue > maxValue:
-                    maxValue = currentValue
-                if currentValue < minValue:
-                    minValue = currentValue
+                if current_value > max_value:
+                    max_value = current_value
+                if current_value < min_value:
+                    min_value = current_value
             # sleep?
             time.sleep(0.01)
 
-        self.logInfo(
-            'Finished calibration routine with {0} fail readings'.format(numFails))
-        self.minValue = minValue
-        self.maxValue = maxValue
-        self.zeroRef = round((maxValue - minValue) / 2.0 + minValue)
+        self.log_info(
+            'Finished calibration routine with {0} fail readings'.format(num_fails))
+        self.minValue = min_value
+        self.maxValue = max_value
+        self.zeroRef = round((max_value - min_value) / 2.0 + min_value)
         self.calibrated = 1
-        self.logInfo('MinValue: {0}, MaxValue: {1}, ZeroRef: {2}'.format(
+        self.log_info('MinValue: {0}, MaxValue: {1}, ZeroRef: {2}'.format(
             self.minValue, self.maxValue, self.zeroRef
         ))
         return
 
-    def moveToPosition(self, pFinal, isAngle=False):
+    def move_to_position(self, pos_final, is_angle=False):
+        """Move to desired position.
+
+        Plan and apply a motion profile to reduce with low jerk, max speed, max acceleration
+        to avoid abrupt variations.
+        The function implement the algorithm developed in [1]_
+
+        Args:
+            pos_final: desired position.
+            is_angle: a boolean, true if pos_final is an angle or false if is qc value
+        :return:
+
+        .. [1] Li, Huaizhong & M Gong, Z & Lin, Wei & Lippa, T. (2007). Motion profile planning for reduced jerk and vibration residuals. 10.13140/2.1.4211.2647.
+        """
         # constants
         # Tmax = 1.7 seems to be the limit before oscillations.
         Tmax = 0.2  # max period for 1 rotation;
@@ -507,66 +559,66 @@ class Epos_controller(Epos):
         numFails = 0
         # is device calibrated?
         if not self.calibrated:
-            self.logInfo('Device is not yet calibrated')
+            self.log_info('Device is not yet calibrated')
             return False
         # is position requested an angle?
-        if isAngle:
-            pFinal = self.getQcPosition(pFinal)
+        if is_angle:
+            pos_final = self.get_qc_position(pos_final)
             # if position can not be calculated, alert user.
-            if pFinal is None:
-                self.logInfo('Failed to calculate position value')
-                if not self.changeEposState('shutdown'):
-                    self.logInfo('Failed to change Epos state to shutdown')
+            if pos_final is None:
+                self.log_info('Failed to calculate position value')
+                if not self.change_state('shutdown'):
+                    self.log_info('Failed to change Epos state to shutdown')
                 return False
 
-        if pFinal > self.maxValue or pFinal < self.minValue:
-            self.logInfo('Final position exceeds physical limits')
+        if pos_final > self.maxValue or pos_final < self.minValue:
+            self.log_info('Final position exceeds physical limits')
             return False
 
-        pStart, OK = self.readPositionValue()
+        pStart, OK = self.read_position_value()
         numFails = 0
         if not OK:
-            self.logInfo('Failed to request current position')
+            self.log_info('Failed to request current position')
             while numFails < 5 and not OK:
-                pStart, OK = self.readPositionValue()
+                pStart, OK = self.read_position_value()
                 if not OK:
                     numFails = numFails + 1
             if numFails == 5:
-                self.logInfo(
+                self.log_info(
                     'Failed to request current position for 5 times... exiting')
                 return False
 
         # -----------------------------------------------------------------------
         # get current state of epos and change it if necessary
         # -----------------------------------------------------------------------
-        state = self.checkEposState()
+        state = self.check_state()
         if state is -1:
-            self.logInfo('Error: Unknown state')
+            self.log_info('Error: Unknown state')
             return False
 
         if state is 11:
             # perform fault reset
-            ok = self.changeEposState('fault reset')
+            ok = self.change_state('fault reset')
             if not ok:
-                self.logInfo('Error: Failed to change state to fault reset')
+                self.log_info('Error: Failed to change state to fault reset')
                 return False
 
         # shutdown
-        if not self.changeEposState('shutdown'):
-            self.logInfo('Failed to change Epos state to shutdown')
+        if not self.change_state('shutdown'):
+            self.log_info('Failed to change Epos state to shutdown')
             return False
         # switch on
-        if not self.changeEposState('switch on'):
-            self.logInfo('Failed to change Epos state to switch on')
+        if not self.change_state('switch on'):
+            self.log_info('Failed to change Epos state to switch on')
             return False
-        if not self.changeEposState('enable operation'):
-            self.logInfo('Failed to change Epos state to enable operation')
+        if not self.change_state('enable operation'):
+            self.log_info('Failed to change Epos state to enable operation')
             return False
         # -----------------------------------------------------------------------
         # Find remaining constants
         # -----------------------------------------------------------------------
         # absolute of displacement
-        l = abs(pFinal - pStart)
+        l = abs(pos_final - pStart)
         if l is 0:
             # already in final point
             return True
@@ -593,12 +645,12 @@ class Epos_controller(Epos):
         ref_error = np.array([], dtype='int32')
 
         # determine the sign of movement
-        moveUp_or_down = np.sign(pFinal - pStart)
+        moveUp_or_down = np.sign(pos_final - pStart)
         flag = True
         pi = np.pi
         cos = np.cos
         time.sleep(0.01)
-
+        # choose monotonic for precision
         t0 = time.monotonic()
         numFails = 0
         while flag and not self.errorDetected:
@@ -607,11 +659,14 @@ class Epos_controller(Epos):
             # time to exit?
             if tin[-1] > t3:
                 flag = False
-                inVar = np.append(inVar, [pFinal])
-                self.setPositionModeSetting(pFinal)
-                aux, OK = self.readPositionValue()
+                inVar = np.append(inVar, [pos_final])
+                self.set_position_mode_setting(pos_final)
+                # reading a position takes time, as so, it should be enough
+                # for it reaches end value since steps are expected to be
+                # small
+                aux, OK = self.read_position_value()
                 if not OK:
-                    self.logInfo('Failed to request current position')
+                    self.log_info('Failed to request current position')
                     numFails = numFails + 1
                 else:
                     outVar = np.append(outVar, [aux])
@@ -644,26 +699,27 @@ class Epos_controller(Epos):
                 aux = round(aux)
                 # append to array and send to device
                 inVar = np.append(inVar, [aux])
-                OK = self.setPositionModeSetting(np.int32(inVar[-1]).item())
+                OK = self.set_position_mode_setting(np.int32(inVar[-1]).item())
                 if not OK:
-                    self.logInfo('Failed to set target position')
+                    self.log_info('Failed to set target position')
                     numFails = numFails + 1
-                aux, OK = self.readPositionValue()
+                aux, OK = self.read_position_value()
                 if not OK:
-                    self.logInfo('Failed to request current position')
+                    self.log_info('Failed to request current position')
                     numFails = numFails + 1
                 else:
                     outVar = np.append(outVar, [aux])
                     tout = np.append(tout, [time.monotonic() - t0])
                     ref_error = np.append(ref_error, [inVar[-1] - outVar[-1]])
                     if abs(ref_error[-1]) > MAXERROR:
-                        self.changeEposState('shutdown')
-                        self.logInfo(
+                        self.change_state('shutdown')
+                        self.log_info(
                             'Something seems wrong, error is growing to mutch!!!')
                         return False
             # require sleep?
             time.sleep(0.005)
-        self.logInfo('Finished with {0} fails'.format(numFails))
+        self.log_info('Finished with {0} fails'.format(numFails))
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -679,9 +735,9 @@ def signal_handler(signum, frame):
 
 
 def main():
-    """Perform steering wheel calibration.
+    """EPOS controller tester.
 
-    Ask user to turn the steering wheel to the extremes and finds the max
+    Simple program to perform a few tests with EPOS device in the car
     """
 
     import argparse
@@ -710,13 +766,13 @@ def main():
     # ---------------------------------------------------------------------------
     # Important constants and definitions to be used
     # ---------------------------------------------------------------------------
-    eposNodeID = 1
-    eposObjDict = None
+    epos_node_id = 1
+    epos_obj_dict = None
     # mqtt constants
     hostname = args.hostname
     port = args.port
     transport = args.transport
-    exitFlag = threading.Event()  # event flag to exit
+    exit_flag = threading.Event()  # event flag to exit
     # ---------------------------------------------------------------------------
     # set up logging to file to used debug level saved to disk
     # ---------------------------------------------------------------------------
@@ -762,13 +818,13 @@ def main():
             logging.info("Failed to connect to server")
         return
 
-    def cleanExit():
-        '''Handle exiting request
+    def clean_exit():
+        """Handle exiting request
 
         Before exiting, send a message to mqtt broker to correctly signal the
         disconnection.
         The function must be appended as method to mqtt client object.
-        '''
+        """
         (rc, _) = client.publish(mqttCanopenStatus, payload="Disconnected",
                                  qos=2, retain=True)
         if rc is not mqtt.MQTT_ERR_SUCCESS:
@@ -795,7 +851,7 @@ def main():
                     qos=2, retain=True)
     client.on_connect = on_connect
     client.on_message = on_message
-    client.cleanExit = cleanExit
+    client.cleanExit = clean_exit
     # ---------------------------------------------------------------------------
     # setup mqtt_controller logger to transmit logging messages via mqtt but do
     # not activate it. Activate only when sucessfull connected to broker.
@@ -805,16 +861,16 @@ def main():
     mqttLogger.setLevel(logging.INFO)
     mqttLogger.setFormatter(logging.Formatter(fmt='[%(asctime)s.%(msecs)03d] [%(name)-20s]: %(levelname)-8s %(message)s',
                                               datefmt='%d-%m-%Y %H:%M:%S'))
-    #---------------------------------------------------------------------------
-    noFaults = True
+    # ---------------------------------------------------------------------------
+    no_faults = True
     try:
         client.connect(hostname, port=port)
         client.loop_start()
     except Exception as e:
         logging.info('Connection failed: {0}'.format(str(e)))
-        noFaults = False
+        no_faults = False
     finally:
-        if not noFaults:
+        if not no_faults:
             client.loop_stop(force=True)
             logging.info('Failed to connect to broker...Exiting')
             return
@@ -823,7 +879,7 @@ def main():
     # For now, create the network from scratch
     # ---------------------------------------------------------------------------
     network = canopen.Network()
-    noFaults = True
+    no_faults = True
     sleep(1)
     try:
         network.connect(channel=args.channel, bustype=args.bus)
@@ -832,20 +888,20 @@ def main():
                        qos=2, retain=True)
     except Exception as e:
         logging.info('Exception caught:{0}'.format(str(e)))
-        noFaults = False
+        no_faults = False
     finally:
-        if not noFaults:
+        if not no_faults:
             logging.info('Failed to connect to can network...Exiting')
             client.cleanExit()
             client.loop_stop(force=True)
             return
     # instanciate object
-    epos = Epos_controller(_network=network)
+    epos = EposController(_network=network)
     # declare threads
-    eposThread = threading.Thread(name="EPOS", target=epos.startCalibration,
-                                       kwargs={'exitFlag': exitFlag})
+    epos_thread = threading.Thread(name="EPOS", target=epos.start_calibration,
+                                   kwargs={'exit_flag': exit_flag})
 
-    if not (epos.begin(eposNodeID, objectDictionary=eposObjDict)):
+    if not (epos.begin(epos_node_id, object_dictionary=epos_obj_dict)):
         logging.info('Failed to begin connection with EPOS device')
         logging.info('Exiting now')
         client.publish(mqttCanopenStatus, payload='Connected',
@@ -854,7 +910,7 @@ def main():
         client.loop_stop(force=True)
         return
     # emcy messages handles
-    epos.node.emcy.add_callback(epos.emcyErrorPrint)
+    epos.node.emcy.add_callback(epos.emcy_error_print)
     # --------------------------------------------------------------------------
     # change default values for canopen sdo settings
     # --------------------------------------------------------------------------
@@ -864,29 +920,32 @@ def main():
     # -------------------------------------------------------------------------
     # test connection
     # --------------------------------------------------------------------------
-    numFails = 0
-    _, success = epos.readStatusWord()
-    while not success and numFails < 5:
-        numFails = numFails + 1
+    num_fails = 0
+    _, success = epos.read_statusword()
+    while not success and num_fails < 5:
+        num_fails = num_fails + 1
         sleep(0.1)
-        _, success = epos.readStatusWord()
+        _, success = epos.read_statusword()
     # any success?
-    if numFails is 5:
+    if num_fails is 5:
         logging.info('Failed to contact EPOS... is it connected? Exiting')
         return
+    # --------------------------------------------------------------------------
+    # change PID settings
+    # --------------------------------------------------------------------------
     # default values were 52, 1, 15
     # last used values 54, 1, 3
-    epos.setPositionControlParameters(pGain=250, iGain=1, dGain=50)
+    epos.set_position_control_parameters(pGain=250, iGain=1, dGain=50)
     # show current Position control parameters
-    epos.printPositionControlParameters()
+    epos.print_position_control_parameters()
 
     try:
-        eposThread.start()
+        epos_thread.start()
         print("Please move steering wheel to extreme positions to calibrate...")
         input("Press Enter when done...\n")
     except KeyboardInterrupt as e:
-        exitFlag.set()
-        eposThread.join()
+        exit_flag.set()
+        epos_thread.join()
         logging.warning('[Main] Got execption {0}... exiting now'.format(e))
         client.publish(mqttCanopenStatus, payload='Connected',
                        qos=2, retain=True)
@@ -894,8 +953,8 @@ def main():
         client.loop_stop(force=True)
         return
 
-    exitFlag.set()
-    eposThread.join()
+    exit_flag.set()
+    epos_thread.join()
     if epos.calibrated == -1:
         logging.info("[Main] Failed to perform calibration")
         client.publish(mqttCanopenStatus, payload='Connected',
@@ -911,7 +970,7 @@ def main():
         client.loop_stop(force=True)
         return
     # reset event()
-    exitFlag.clear()
+    exit_flag.clear()
     # create software position limits?
     # TODO: define max and min
 
@@ -920,7 +979,7 @@ def main():
         epos.maxValue, epos.minValue, epos.zeroRef))
     print("---------------------------------------------")
     print("Moving into Zero Ref position....")
-    epos.moveToPosition(epos.zeroRef)
+    epos.move_to_position(epos.zeroRef)
     print('Done!')
     print("---------------------------------------------")
 
@@ -938,11 +997,11 @@ def main():
             #         # save qc to a file to be used later
             #         eposThread = threading.Thread(name="Save QC",
             #                                       target=epos.saveToFile,
-            #                                       kwargs={'exitFlag': exitFlag})
+            #                                       kwargs={'exit_flag': exit_flag})
             #         eposThread.start()
             #         print("Recording to file.")
             #         input("Press Enter when done...\n")
-            #         exitFlag.set()
+            #         exit_flag.set()
             #         eposThread.join()
             #     elif val is 2:
             #         # get latest file in data dir
@@ -979,7 +1038,7 @@ def main():
     except KeyboardInterrupt as e:
         logging.info('[Main] Got exception {0}... exiting now'.format(e))
     finally:
-        exitFlag.set()  # in case any thread is still working
+        exit_flag.set()  # in case any thread is still working
         epos.disconnect()
         client.publish(mqttCanopenStatus, payload='Connected',
                        qos=2, retain=True)
