@@ -157,20 +157,21 @@ class Epos_controller(Epos):
         (0xFF0A, "Position Sensor Breach"),
         (0xFF0B, "System Overloaded")
     ]
-    def emcy_error_print(self, EmcyError):
+
+    def emcy_error_print(self, emcy_error):
         """Print any EMCY Error Received on CAN BUS
         """
-        if EmcyError.code is 0:
+        if emcy_error.code is 0:
             self.errorDetected = False
         else:
             for code, description in self.emcy_descriptions:
-                if EmcyError.code == code:
+                if emcy_error.code == code:
                     self.errorDetected = True
                     self.log_info("Got an EMCY message: Code: 0x{0:04X} {1}".format(code, description))
                     return
             # if no description was found, print generic info
             self.errorDetected = True
-            self.log_info('Got an EMCY message: {0}'.format(EmcyError))
+            self.log_info('Got an EMCY message: {0}'.format(emcy_error))
         return
 
     def get_qc_position(self, delta):
