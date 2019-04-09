@@ -1,3 +1,6 @@
 [submodule "EPOS_Canopen"]
 	path = EPOS_Canopen
 	url = https://github.com/brtiberio/EPOS_Canopen.git
+[submodule "Sinamics_Canopen"]
+	path = Sinamics_Canopen
+	url = https://github.com/brtiberio/Sinamics_Canopen.git

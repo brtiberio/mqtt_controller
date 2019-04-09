@@ -30,29 +30,39 @@ import numpy as np
 import canopen
 import pathlib
 import csv
-
-
 # import queue
 import paho.mqtt.client as mqtt
-import paho.mqtt.publish as publish
-
 
 from EPOS_Canopen.epos import Epos
+from Sinamics_Canopen.sinamics import SINAMICS
 
-protocol = mqtt.MQTTv311
-# mqtt topics to be used with epos
-protocol = mqtt.MQTTv311
-eposTopic = 'VIENA/steering/'                     # base topic
-eposTopicAngle = eposTopic + 'angle'              # current angle
-eposTopicPID = eposTopic + 'pid'                  # pid settings topic
-eposTopicCalibration = eposTopic + 'calibration'  # calibration topic
-mqttControllerTopic = 'VIENA/mqttController/'     # controller base topic
-mqttLogTopic = mqttControllerTopic + 'logger'     # controller logger topic
-# controller connection status
-mqttStatusTopic = mqttControllerTopic + 'connectStatus'
-# controller canopen connection status
-mqttCanopenStatus = mqttControllerTopic + 'canopenStatus'
+import pydevd
+pydevd.settrace('192.168.31.124', port=8000, stdoutToServer=True, stderrToServer=True)
 
+# ----------------------------------------------------------------------------------------------------------------------
+# mqtt topics to be used
+# ----------------------------------------------------------------------------------------------------------------------
+protocol = mqtt.MQTTv311
+
+# General topics
+general_topics = {'canopen': 'VIENA/General/canopen',  # canopen status
+                  'rpi':     'VIENA/General/rpi',      # rpi client connected
+                  'log':     'VIENA/General/log'                 # logger topic
+                  }
+# SINAMICS MQTT Topics
+sinamics_topics = {'connected': 'VIENA/SINAMICS/connected',  # inverter connected status
+                   'velocity': 'VIENA/SINAMICS/velocity',  # estimated velocity
+                   'state_read': 'VIENA/SINAMICS/state/read',  # state from inverter to others
+                   'state_write': 'VIENA/SINAMICS/state/write',  # state from others to inverter
+                   'EMCY': 'VIENA/SINAMICS/EMCY',  # print emergency messages
+                   'target_velocity_read': 'VIENA/SINAMICS/target_velocity/read',  # target velocity read
+                   'target_velocity_write': 'VIENA/SINAMICS/target_velocity/write',  # target velocity write
+                   }
+# epos_topics = {}
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Creation of logger handler to send log messages over mqtt
+# ----------------------------------------------------------------------------------------------------------------------
 
 class MQTTHandler(logging.Handler):
     """
@@ -69,20 +79,17 @@ class MQTTHandler(logging.Handler):
 
     def emit(self, record):
         """
-        Publish a single formatted logging record to a broker, then disconnect
-        cleanly.
+        Publish a formatted logging record to a broker.
         """
         msg = self.format(record)
-        # send single and disconnect or stay connected? TODO
-        # publish.single(self.topic, msg, self.qos, self.retain,
-        #                hostname=self.hostname, port=self.port,
-        #                client_id=self.client_id, keepalive=self.keepalive,
-        #                will=self.will, auth=self.auth, tls=self.tls,
-        #                protocol=self.protocol, transport=self.transport)
+        # todo check if connected
         self.client.publish(self.topic, payload=msg,
                             qos=self.qos, retain=self.retain)
 
 
+# ----------------------------------------------------------------------------------------------------------------------
+# Redefined class for Epos controller to add additional functionalities
+# ----------------------------------------------------------------------------------------------------------------------
 class EposController(Epos):
     maxFollowingError = 7500
     minValue = 0  # type: int
@@ -194,7 +201,7 @@ class EposController(Epos):
         delta = (qc - self.zeroRef) * self.QC_TO_DELTA
         return float(delta)
 
-    def save_to_file(self, filename=None, exitFlag=None):
+    def save_to_file(self, filename=None, exit_flag=None):
         """Record qc positions into a csv file
 
         The following fields will be recorded
@@ -221,28 +228,28 @@ class EposController(Epos):
 
         Args:
             filename: name of the file to save the data
-            exitFlag: threading event flag to signal exit.
+            exit_flag: threading event flag to signal exit.
         """
         # check if inputs were supplied
-        if not exitFlag:
-            self.log_info('Error: exitFlag must be supplied')
+        if not exit_flag:
+            self.log_info('Error: exit_flag must be supplied')
             return
         # make sure is clear.
-        if exitFlag.isSet():
-            exitFlag.clear()
+        if exit_flag.isSet():
+            exit_flag.clear()
         # ----------------------------------------------------------------------
         # Confirm epos is in a suitable state for free movement
         # ----------------------------------------------------------------------
-        stateID = self.check_state()
+        state_id = self.check_state()
         # failed to get state?
-        if stateID is -1:
+        if state_id is -1:
             self.log_info('Error: Unknown state')
             return
         # If epos is not in disable operation at least,
         # motor is expected to be blocked
-        if stateID > 4:
+        if state_id > 4:
             self.log_info('Not a proper operation mode: {0}'.format(
-                self.state[stateID]))
+                self.state[state_id]))
             if not self.change_state('shutdown'):
                 self.log_info('Failed to change Epos state to shutdown')
                 return
@@ -278,14 +285,14 @@ class EposController(Epos):
         num_fails = 0
         # get current time
         t0 = time.monotonic()
-        while not exitFlag.isSet():
+        while not exit_flag.isSet():
             current_value, ok = self.read_position_value()
-            tOut = time.monotonic() - t0
+            t_out = time.monotonic() - t0
             if not ok:
                 self.log_info('Failed to request current position')
                 num_fails = num_fails + 1
             else:
-                writer.writerow({'time': tOut, 'position': current_value,
+                writer.writerow({'time': t_out, 'position': current_value,
                                  'angle': self.get_delta_angle(current_value)})
             # sleep?
             time.sleep(0.01)
@@ -398,19 +405,19 @@ class EposController(Epos):
                     t0 = time.monotonic()
                     last_read = 0
                 else:
-                    # if is not the first position but tOut is not yeat t_target
+                    # if is not the first position but t_out is not yet t_target
                     # sleep
                     # skip to next step?
                     while True:
-                        tOut = time.monotonic() - t0
+                        t_out = time.monotonic() - t0
                         # is time to send new values?
-                        if tOut > t_target:
+                        if t_out > t_target:
                             # time to update
                             if not self.set_position_mode_setting(position):
                                 num_fails = num_fails + 1
                             break
                         # if we are not sending new targets, request current value to see the error
-                        if tOut - last_read > 0.051:
+                        if t_out - last_read > 0.051:
                             aux, OK = self.read_position_value()
                             if not OK:
                                 self.log_info('Failed to request current position')
@@ -422,15 +429,15 @@ class EposController(Epos):
                                     self.log_info(
                                         'Error is growing to much. Something seems wrong')
                                     print('time={0:+08.3f}\tIn={1:+05}\tOut={2:+05}\tError={3:+05}'.format(
-                                        tOut, position, aux, ref_error))
+                                        t_out, position, aux, ref_error))
                                     if not self.change_state('shutdown'):
                                         self.log_info(
                                             'Failed to change Epos state to shutdown')
                                     return
                                 # for debug print every time on each cycle
                                 print('time={0:+08.3f}\tIn={1:+05}\tOut={2:+05}\tError={3:+05}'.format(
-                                    tOut, position, aux, ref_error))
-                            last_read = tOut
+                                    t_out, position, aux, ref_error))
+                            last_read = t_out
                         time.sleep(0.001)
                 I = I + 1  # increase line number
                 if self.errorDetected:
@@ -520,12 +527,13 @@ class EposController(Epos):
             pos_final: desired position.
             is_angle: a boolean, true if pos_final is an angle or false if is qc value
         :return:
+            boolean: True if all went as expected or false otherwise
 
         .. [1] Li, Huaizhong & M Gong, Z & Lin, Wei & Lippa, T. (2007). Motion profile planning for reduced jerk and vibration residuals. 10.13140/2.1.4211.2647.
         """
         # constants
-        # Tmax = 1.7 seems to be the limit before oscillations.
-        Tmax = 0.2  # max period for 1 rotation;
+        # t_max = 1.7 seems to be the limit before oscillations.
+        t_max = 0.2  # max period for 1 rotation;
         # 1 rev = 3600*4 [qc]
         countsPerRev = 3600 * 4
         #
@@ -535,28 +543,28 @@ class EposController(Epos):
         #
         # this yields: 1Hz = (sensor resolution * 4)/s
         #
-        # Fmax = 1 / Tmax;
+        # Fmax = 1 / t_max;
         #
-        # maxSpeed = 60 rpm/Tmax [rpm]=
-        #          = 360degrees/Tmax [degrees/s]=
-        #          = (sensor resolution *4)/Tmax [qc/s]
+        # max_speed = 60 rpm/t_max [rpm]=
+        #          = 360degrees/t_max [degrees/s]=
+        #          = (sensor resolution *4)/t_max [qc/s]
 
-        maxSpeed = countsPerRev / Tmax  # degrees per sec
+        max_speed = countsPerRev / t_max  # degrees per sec
 
         # max acceleration must be experimental obtained.
         # reduced and fixed.
-        maxAcceleration = 6000.0  # [qc]/s^2
+        max_acceleration = 6000.0  # [qc]/s^2
 
         # maximum interval for both the acceleration  and deceleration phase are:
-        T1max = 2.0 * maxSpeed / maxAcceleration  # type: float
+        t1_max = 2.0 * max_speed / max_acceleration  # type: float
 
         # the max distance covered by these two phase (assuming acceleration equal
-        # deceleration) is 2* 1/4 * Amax * T1max^2 = 1/2 * Amax * T1max^2 = 2Vmax^2/Amax
-        maxL13 = 2.0 * maxSpeed ** 2 / maxAcceleration  # type: float
+        # deceleration) is 2* 1/4 * Amax * t1_max^2 = 1/2 * Amax * t1_max^2 = 2Vmax^2/Amax
+        max_l13 = 2.0 * max_speed ** 2 / max_acceleration  # type: float
 
         # max error in quadrature counters
-        MAXERROR = 7500
-        numFails = 0
+        max_error = 7500
+        # num_fails = 0
         # is device calibrated?
         if not self.calibrated:
             self.log_info('Device is not yet calibrated')
@@ -575,15 +583,15 @@ class EposController(Epos):
             self.log_info('Final position exceeds physical limits')
             return False
 
-        pStart, OK = self.read_position_value()
-        numFails = 0
-        if not OK:
+        p_start, ok = self.read_position_value()
+        num_fails = 0
+        if not ok:
             self.log_info('Failed to request current position')
-            while numFails < 5 and not OK:
-                pStart, OK = self.read_position_value()
-                if not OK:
-                    numFails = numFails + 1
-            if numFails == 5:
+            while num_fails < 5 and not ok:
+                p_start, ok = self.read_position_value()
+                if not ok:
+                    num_fails = num_fails + 1
+            if num_fails == 5:
                 self.log_info(
                     'Failed to request current position for 5 times... exiting')
                 return False
@@ -618,108 +626,156 @@ class EposController(Epos):
         # Find remaining constants
         # -----------------------------------------------------------------------
         # absolute of displacement
-        l = abs(pos_final - pStart)
+        l = abs(pos_final - p_start)
         if l is 0:
             # already in final point
             return True
         # do we need  a constant velocity phase?
-        if l > maxL13:
-            T2 = 2.0 * (l - maxL13) / (maxAcceleration * T1max)
-            T1 = T1max
-            T3 = T1max
+        if l > max_l13:
+            t2 = 2.0 * (l - max_l13) / (max_acceleration * t1_max)
+            t1 = t1_max
+            t3 = t1_max
         else:
-            T1 = np.sqrt(2 * l / maxAcceleration)
-            T2 = 0.0
-            T3 = T1
+            t1 = np.sqrt(2 * l / max_acceleration)
+            t2 = 0.0
+            t3 = t1
 
         # time constants
-        t1 = T1
-        t2 = T2 + t1
-        t3 = T3 + t2  # final time
+        t1 = t1
+        t2 = t2 + t1
+        t3 = t3 + t2  # final time
 
         # allocate vars
-        inVar = np.array([], dtype='int32')
-        outVar = np.array([], dtype='int32')
+        in_var = np.array([], dtype='int32')
+        out_var = np.array([], dtype='int32')
         tin = np.array([], dtype='int32')
         tout = np.array([], dtype='int32')
         ref_error = np.array([], dtype='int32')
 
         # determine the sign of movement
-        moveUp_or_down = np.sign(pos_final - pStart)
+        move_up_or_down = np.sign(pos_final - p_start)
         flag = True
         pi = np.pi
         cos = np.cos
         time.sleep(0.01)
         # choose monotonic for precision
         t0 = time.monotonic()
-        numFails = 0
+        num_fails = 0
         while flag and not self.errorDetected:
             # request current time
             tin = np.append(tin, [time.monotonic() - t0])
             # time to exit?
             if tin[-1] > t3:
                 flag = False
-                inVar = np.append(inVar, [pos_final])
+                in_var = np.append(in_var, [pos_final])
                 self.set_position_mode_setting(pos_final)
                 # reading a position takes time, as so, it should be enough
                 # for it reaches end value since steps are expected to be
                 # small
-                aux, OK = self.read_position_value()
-                if not OK:
+                aux, ok = self.read_position_value()
+                if not ok:
                     self.log_info('Failed to request current position')
-                    numFails = numFails + 1
+                    num_fails = num_fails + 1
                 else:
-                    outVar = np.append(outVar, [aux])
+                    out_var = np.append(out_var, [aux])
                     tout = np.append(tout, [time.monotonic() - t0])
-                    ref_error = np.append(ref_error, [inVar[-1] - outVar[-1]])
+                    ref_error = np.append(ref_error, [in_var[-1] - out_var[-1]])
             # not finished
             else:
                 # get reference position for that time
                 if tin[-1] <= t1:
-                    aux = pStart + \
-                          moveUp_or_down * maxAcceleration / 2.0 * (T1 / (2.0 * pi)) ** 2 * \
-                          (1 / 2.0 * (2.0 * pi / T1 *
-                                      tin[-1]) ** 2 - (1.0 - cos(2.0 / T1 * pi * tin[-1])))
+                    aux = p_start + \
+                          move_up_or_down * max_acceleration / 2.0 * (t1 / (2.0 * pi)) ** 2 * \
+                          (1 / 2.0 * (2.0 * pi / t1 *
+                                      tin[-1]) ** 2 - (1.0 - cos(2.0 / t1 * pi * tin[-1])))
                 else:
-                    if (T2 > 0 and tin[-1] > t1 and tin[-1] <= t2):
-                        aux = pStart + \
-                              moveUp_or_down * \
-                              (1 / 4.0 * maxAcceleration * T1 ** 2 + 1 /
-                               2.0 * maxAcceleration * T1 * (tin[-1] - t1))
+                    if (t2 > 0 and tin[-1] > t1 and tin[-1] <= t2):
+                        aux = p_start + \
+                              move_up_or_down * \
+                              (1 / 4.0 * max_acceleration * t1 ** 2 + 1 /
+                               2.0 * max_acceleration * t1 * (tin[-1] - t1))
                     else:
-                        aux = pStart + \
-                              moveUp_or_down * (1 / 4.0 * maxAcceleration * T1 ** 2
-                                                + 1 / 2.0 * maxAcceleration * T1 * T2 +
-                                                maxAcceleration / 2.0 *
-                                                (T1 / (2.0 * pi)) ** 2
-                                                * ((2.0 * pi) ** 2 * (tin[-1] - t2) / T1 - 1 / 2.0 * (2.0 * pi / T1
-                                                                                                      * (tin[
-                                                                                                             -1] - t2)) ** 2 + (
-                                                           1.0 - cos(2.0 * pi / T1 * (tin[-1] - t2)))))
+                        aux = p_start + \
+                              move_up_or_down * (1 / 4.0 * max_acceleration * t1 ** 2
+                                                 + 1 / 2.0 * max_acceleration * t1 * t2 +
+                                                 max_acceleration / 2.0 *
+                                                 (t1 / (2.0 * pi)) ** 2
+                                                 * ((2.0 * pi) ** 2 * (tin[-1] - t2) / t1 - 1 / 2.0 * (2.0 * pi / t1
+                                                                                                       * (tin[
+                                                                                                              -1] - t2)) ** 2 + (
+                                                            1.0 - cos(2.0 * pi / t1 * (tin[-1] - t2)))))
                 aux = round(aux)
                 # append to array and send to device
-                inVar = np.append(inVar, [aux])
-                OK = self.set_position_mode_setting(np.int32(inVar[-1]).item())
-                if not OK:
+                in_var = np.append(in_var, [aux])
+                ok = self.set_position_mode_setting(np.int32(in_var[-1]).item())
+                if not ok:
                     self.log_info('Failed to set target position')
-                    numFails = numFails + 1
-                aux, OK = self.read_position_value()
-                if not OK:
+                    num_fails = num_fails + 1
+                aux, ok = self.read_position_value()
+                if not ok:
                     self.log_info('Failed to request current position')
-                    numFails = numFails + 1
+                    num_fails = num_fails + 1
                 else:
-                    outVar = np.append(outVar, [aux])
+                    out_var = np.append(out_var, [aux])
                     tout = np.append(tout, [time.monotonic() - t0])
-                    ref_error = np.append(ref_error, [inVar[-1] - outVar[-1]])
-                    if abs(ref_error[-1]) > MAXERROR:
+                    ref_error = np.append(ref_error, [in_var[-1] - out_var[-1]])
+                    if abs(ref_error[-1]) > max_error:
                         self.change_state('shutdown')
                         self.log_info(
                             'Something seems wrong, error is growing to mutch!!!')
                         return False
             # require sleep?
             time.sleep(0.005)
-        self.log_info('Finished with {0} fails'.format(numFails))
+        self.log_info('Finished with {0} fails'.format(num_fails))
         return True
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Redefined class for inverter controller to add additional functionalities
+# ----------------------------------------------------------------------------------------------------------------------
+
+
+class SinamicsController(SINAMICS):
+
+    def emcy_error_print(self, emcy_error):
+        """ Override default emcy error print to include the MQTT publisher.
+        """
+        if emcy_error.code is 0:
+            return
+        else:
+            fault_number = int.from_bytes(emcy_error.data[0:2], 'little')
+            drive_object_number = int(emcy_error.data[2])
+            if fault_number in self.sinamics_fault_number:
+                description = self.sinamics_fault_number[fault_number]
+            else:
+                description = "unknown"
+            self.log_info('Got an EMCY message {0}'.format(emcy_error))
+            self.log_info('Sinamics error number: {0} with \'{1}\' in drive unit {2}'.format(fault_number,
+                                                                                             description,
+                                                                                             drive_object_number))
+            if client.connected:
+                client.publish(sinamics_topics['EMCY'], payload=description, qos=1)
+            return
+
+    def print_velocity(self, message):
+        """Print velocity value received from PDO
+
+        Args:
+            message: message received in PDO
+        """
+        self.log_debug('{0} received'.format(message.name))
+        for var in message:
+            self.log_debug('{0} = {1:06X}'.format(var.name, var.raw))
+            if var.index == 0x6041:
+                if not client.connected:
+                    pass
+                else:
+                    state = self.check_state(var.raw)
+                    client.publish(sinamics_topics['state_read'], payload=state.to_bytes(1, 'little'))
+            if var.index == 0x606C:
+                if not client.connected:
+                    self.log_info('{0:+05d} RPM'.format(var.raw))
+                else:
+                    client.publish(sinamics_topics['velocity'], payload=var.raw.to_bytes(4, 'little', signed=True))
 
 
 # ---------------------------------------------------------------------------
@@ -762,12 +818,25 @@ def main():
                         help='path to be used in mqtt broker', dest='path')
     parser.add_argument('--transport', action='store', default='websockets', type=str,
                         help='transport layer used in mqtt broker', dest='transport')
+    parser.add_argument("--log-level", action="store", type=str,
+                        dest="logLevel", default='info',
+                        help='Log level to be used. See logging module for more info',
+                        choices=['critical', 'error', 'warning', 'info', 'debug'])
+
     args = parser.parse_args()
+    log_level = {'error': logging.ERROR,
+                 'debug': logging.DEBUG,
+                 'info': logging.INFO,
+                 'warning': logging.WARNING,
+                 'critical': logging.CRITICAL
+                 }
     # ---------------------------------------------------------------------------
     # Important constants and definitions to be used
     # ---------------------------------------------------------------------------
     epos_node_id = 1
-    epos_obj_dict = None
+    sinamics_node_id = 2
+    sinamics_obj_dict = 'Sinamics_Canopen/sinamics_s120.eds'
+
     # mqtt constants
     hostname = args.hostname
     port = args.port
@@ -776,7 +845,7 @@ def main():
     # ---------------------------------------------------------------------------
     # set up logging to file to used debug level saved to disk
     # ---------------------------------------------------------------------------
-    logging.basicConfig(level=logging.DEBUG,
+    logging.basicConfig(level=log_level[args.logLevel],
                         format='[%(asctime)s.%(msecs)03d] [%(name)-20s]: %(levelname)-8s %(message)s',
                         datefmt='%d-%m-%Y %H:%M:%S',
                         filename='mqtt_controller.log',
@@ -797,7 +866,7 @@ def main():
     # ---------------------------------------------------------------------------
 
     def on_message(self, userdata, message):
-        if message.topic == mqttLogTopic:
+        if message.topic == general_topics[2]:
             logging.info('Received message: "' + str(message.payload.decode('UTF-8')) + '" on topic '
                          + message.topic + ' with QoS ' + str(message.qos))
         else:
@@ -806,17 +875,25 @@ def main():
 
     def on_connect(client, userdata, flags, rc):
         if rc == 0:
-            # sucessfully connected
-            (rc, _) = client.publish(mqttStatusTopic, payload="Connected",
-                                     qos=2, retain=True)
+            client.connected = True
+            # successfully connected
+            (rc, _) = client.publish(general_topics['rpi'], payload=True.to_bytes(1, 'little'),
+                                   qos=2, retain=True)
             if rc is mqtt.MQTT_ERR_SUCCESS:
                 # now add mqttLog to root logger to enable it
-                logging.getLogger('').addHandler(mqttLogger)
+                logging.getLogger('').addHandler(mqtt_logger)
+
+                # TODO subscribe to other topics
             else:
                 logging.info('Unexpected result on publish: rc={0}'.format(rc))
         else:
             logging.info("Failed to connect to server")
         return
+
+    def on_disconnect(self, userdata, rc):
+        if rc != 0:
+            logging.info("Unexpected MQTT disconnection. Will auto-reconnect")
+
 
     def clean_exit():
         """Handle exiting request
@@ -825,17 +902,20 @@ def main():
         disconnection.
         The function must be appended as method to mqtt client object.
         """
-        (rc, _) = client.publish(mqttCanopenStatus, payload="Disconnected",
+        # tell we are disconnected on canopen topic
+        (rc, _) = client.publish(general_topics['canopen'], payload=False.to_bytes(1, 'little'),
                                  qos=2, retain=True)
         if rc is not mqtt.MQTT_ERR_SUCCESS:
-            logging.info('Failed to publish on exit: mqttCanopenStatus')
-        (rc, _) = client.publish(mqttStatusTopic, payload="Disconnected",
+            logging.info('Failed to publish on exit: {0}'.format(general_topics['canopen']))
+
+        # tell we are disconnected on rpi topic
+        (rc, _) = client.publish(general_topics['rpi'], payload=False.to_bytes(1, 'little'),
                                  qos=2, retain=True)
         if rc is not mqtt.MQTT_ERR_SUCCESS:
-            logging.info('Failed to publish on exit: mqttStatusTopic')
+            logging.info('Failed to publish on exit: {0}'.format(general_topics['rpi']))
         sleep(1)
         # wait for all messages are published before disconnect
-        while(len(client._out_messages)):
+        while len(client._out_messages):
             sleep(0.01)
         client.disconnect()
         return
@@ -847,20 +927,23 @@ def main():
     # ---------------------------------------------------------------------------
     global client
     client = mqtt.Client(protocol=protocol, transport=transport)
-    client.will_set(mqttStatusTopic, payload="Disconnected",
+    # in case of lost connection, tell other we are dead.
+    client.will_set(general_topics['rpi'], payload=False.to_bytes(1, 'little'),
                     qos=2, retain=True)
     client.on_connect = on_connect
     client.on_message = on_message
+    client.on_disconnect = on_disconnect
     client.cleanExit = clean_exit
+    client.connected = False
     # ---------------------------------------------------------------------------
     # setup mqtt_controller logger to transmit logging messages via mqtt but do
     # not activate it. Activate only when sucessfull connected to broker.
     # ---------------------------------------------------------------------------
-    mqttLogger = MQTTHandler(client, mqttLogTopic)
+    mqtt_logger = MQTTHandler(client, general_topics['log'])
     # save all levels
-    mqttLogger.setLevel(logging.INFO)
-    mqttLogger.setFormatter(logging.Formatter(fmt='[%(asctime)s.%(msecs)03d] [%(name)-20s]: %(levelname)-8s %(message)s',
-                                              datefmt='%d-%m-%Y %H:%M:%S'))
+    mqtt_logger.setLevel(logging.INFO)
+    mqtt_logger.setFormatter(logging.Formatter(fmt='[%(asctime)s.%(msecs)03d] [%(name)-20s]: %(levelname)-8s %(message)s',
+                                               datefmt='%d-%m-%Y %H:%M:%S'))
     # ---------------------------------------------------------------------------
     no_faults = True
     try:
@@ -875,7 +958,7 @@ def main():
             logging.info('Failed to connect to broker...Exiting')
             return
     # ---------------------------------------------------------------------------
-    # TODO: in order to be able to use EPOS with the SINAMCIS, network must be shared
+    # TODO: in order to be able to use EPOS with the SINAMICS, network must be shared
     # For now, create the network from scratch
     # ---------------------------------------------------------------------------
     network = canopen.Network()
@@ -884,7 +967,7 @@ def main():
     try:
         network.connect(channel=args.channel, bustype=args.bus)
         # if no exception, connection is made. Signal in mqtt.
-        client.publish(mqttCanopenStatus, payload='Connected',
+        client.publish(general_topics['canopen'], payload=True.to_bytes(1, 'little'),
                        qos=2, retain=True)
     except Exception as e:
         logging.info('Exception caught:{0}'.format(str(e)))
@@ -895,152 +978,104 @@ def main():
             client.cleanExit()
             client.loop_stop(force=True)
             return
-    # instanciate object
-    epos = EposController(_network=network)
-    # declare threads
-    epos_thread = threading.Thread(name="EPOS", target=epos.start_calibration,
-                                   kwargs={'exit_flag': exit_flag})
+    # instantiate Sinamics inverter object using external network
+    inverter = SinamicsController(_network=network)
 
-    if not (epos.begin(epos_node_id, object_dictionary=epos_obj_dict)):
-        logging.info('Failed to begin connection with EPOS device')
+    if not (inverter.begin(sinamics_node_id, object_dictionary=sinamics_obj_dict)):
+        logging.info('Failed to begin connection with Sinamics device')
         logging.info('Exiting now')
-        client.publish(mqttCanopenStatus, payload='Connected',
-                       qos=2, retain=True)
+        client.publish(sinamics_topics['connected'], payload=False.to_bytes(1, 'little'), qos=2, retain=True)
         client.cleanExit()
         client.loop_stop(force=True)
         return
+    # if successfully connected, publish it to sinamics connected topic
+    client.publish(sinamics_topics['connected'], payload=True.to_bytes(1, 'little'), qos=2, retain=True)
+
     # emcy messages handles
-    epos.node.emcy.add_callback(epos.emcy_error_print)
+    inverter.node.emcy.add_callback(inverter.emcy_error_print)
     # --------------------------------------------------------------------------
     # change default values for canopen sdo settings
     # --------------------------------------------------------------------------
-    epos.node.sdo.MAX_RETRIES = 2
-    epos.node.sdo.PAUSE_BEFORE_SEND = 0.005
-    epos.node.sdo.RESPONSE_TIMEOUT = 0.01
+    inverter.node.sdo.MAX_RETRIES = 2
+    # inverter.node.sdo.PAUSE_BEFORE_SEND = 0.01
+    # inverter.node.sdo.RESPONSE_TIMEOUT = 0.02
     # -------------------------------------------------------------------------
     # test connection
     # --------------------------------------------------------------------------
     num_fails = 0
-    _, success = epos.read_statusword()
-    while not success and num_fails < 5:
+    state = inverter.check_state()
+    while not state and num_fails < 5:
         num_fails = num_fails + 1
         sleep(0.1)
-        _, success = epos.read_statusword()
+        state = inverter.check_state()
     # any success?
     if num_fails is 5:
-        logging.info('Failed to contact EPOS... is it connected? Exiting')
+        logging.info('Failed to contact inverter... is it connected? Exiting')
+        client.publish(sinamics_topics['connected'], payload=False.to_bytes(1, 'little'), qos=2, retain=True)
+        client.cleanExit()
+        client.loop_stop(force=True)
         return
+    # send current state to mqtt
+    client.publish(sinamics_topics['state_read'], payload=state.to_bytes(1, 'little'), qos=1, retain=True)
     # --------------------------------------------------------------------------
-    # change PID settings
+    # configure pdo objects
     # --------------------------------------------------------------------------
-    # default values were 52, 1, 15
-    # last used values 54, 1, 3
-    epos.set_position_control_parameters(pGain=250, iGain=1, dGain=50)
-    # show current Position control parameters
-    epos.print_position_control_parameters()
+    inverter.node.pdo.read()
+
+    inverter.node.nmt.state = 'PRE-OPERATIONAL'
+    inverter.node.pdo.tx[1].clear()
+    inverter.node.pdo.tx[2].clear()
+    inverter.node.pdo.tx[3].clear()
+    inverter.node.pdo.tx[4].clear()
+
+    inverter.node.pdo.rx[1].clear()
+    inverter.node.pdo.rx[2].clear()
+    inverter.node.pdo.rx[3].clear()
+    inverter.node.pdo.rx[4].clear()
+
+    # Do some changes to TxPDO2
+    inverter.node.pdo.tx[2].clear()
+    inverter.node.pdo.tx[2].add_variable(0x6041, 0, 16)
+    inverter.node.pdo.tx[2].add_variable(0x606C, 0, 32)
+    inverter.node.pdo.tx[2].enabled = True
+    # inverter.node.pdo.tx[2].event_timer = 2000
+    inverter.node.pdo.tx[2].trans_type = 254
+
+    inverter.change_state('fault reset')
+    sleep(0.1)
+    # Save parameters to device
+    inverter.node.pdo.tx[2].save()
+
+    # Add callback for message reception
+    inverter.node.pdo.tx[2].add_callback(inverter.print_velocity)
+    # --------------------------------------------------------------------------
+    # Set back into operational mode
+    inverter.node.nmt.state = 'OPERATIONAL'
+    # TODO change State is failing. to be checked
+    sleep(0.1)
+    inverter.change_state('shutdown')
+    sleep(0.1)
+    inverter.change_state('switch on')
+    sleep(0.1)
+    inverter.change_state('enable operation')
+    inverter.print_current_smoothed()
 
     try:
-        epos_thread.start()
-        print("Please move steering wheel to extreme positions to calibrate...")
-        input("Press Enter when done...\n")
-    except KeyboardInterrupt as e:
-        exit_flag.set()
-        epos_thread.join()
-        logging.warning('[Main] Got execption {0}... exiting now'.format(e))
-        client.publish(mqttCanopenStatus, payload='Connected',
-                       qos=2, retain=True)
-        client.cleanExit()
-        client.loop_stop(force=True)
-        return
-
-    exit_flag.set()
-    epos_thread.join()
-    if epos.calibrated == -1:
-        logging.info("[Main] Failed to perform calibration")
-        client.publish(mqttCanopenStatus, payload='Connected',
-                       qos=2, retain=True)
-        client.cleanExit()
-        client.loop_stop(force=True)
-        return
-    if epos.calibrated == 0:
-        logging.info("[Main] Calibration not yet done")
-        client.publish(mqttCanopenStatus, payload='Connected',
-                       qos=2, retain=True)
-        client.cleanExit()
-        client.loop_stop(force=True)
-        return
-    # reset event()
-    exit_flag.clear()
-    # create software position limits?
-    # TODO: define max and min
-
-    print("---------------------------------------------")
-    print("Max Value: {0}\nMin Value: {1}\nZero Ref: {2}".format(
-        epos.maxValue, epos.minValue, epos.zeroRef))
-    print("---------------------------------------------")
-    print("Moving into Zero Ref position....")
-    epos.move_to_position(epos.zeroRef)
-    print('Done!')
-    print("---------------------------------------------")
-
-
-    stopCycle = False
-    try:
-        while not stopCycle:
-            sleep(0.1)
-            # val = mainMenu.display()
-            # if val is not None:
-            #     if val is 0:
-            #         # exit program
-            #         stopCycle = True
-            #     elif val is 1:
-            #         # save qc to a file to be used later
-            #         eposThread = threading.Thread(name="Save QC",
-            #                                       target=epos.saveToFile,
-            #                                       kwargs={'exit_flag': exit_flag})
-            #         eposThread.start()
-            #         print("Recording to file.")
-            #         input("Press Enter when done...\n")
-            #         exit_flag.set()
-            #         eposThread.join()
-            #     elif val is 2:
-            #         # get latest file in data dir
-            #         directory = pathlib.Path('./data/')
-            #         _, file_path = max((f.stat().st_mtime, f)
-            #                            for f in directory.iterdir())
-            #         epos.readFromFile(str(file_path), useAngle=True)
-            #     elif val is 3:
-            #         try:
-            #             x = int(input("Enter desired position [qc]: "))
-            #             print(
-            #                 '-----------------------------------------------------------')
-            #             print('Moving to position {0:+16,}'.format(x))
-            #             epos.moveToPosition(x)
-            #             print('done')
-            #             print(
-            #                 '-----------------------------------------------------------')
-            #             # shutdown
-            #             if not epos.changeEposState('shutdown'):
-            #                 logging.info(
-            #                     '[Main] Failed to change Epos state to shutdown')
-            #         except KeyboardInterrupt as e:
-            #             logging.info(
-            #                 '[Main] Got execption {0}... exiting now'.format(e))
-            #     elif val is 4:
-            #         print("Show configurations:")
-            #         epos.printPositionControlParameters()
-            #         epos.printMotorConfig()
-            #         epos.printSensorConfig()
-            #         input("Press any key to continue...\n")
-            #     else:
-            #         pass
-
+        print("Ctrl+C to exit... ")
+        while True:
+            velocity = int(input('Set your velocity...'))
+            if velocity is None:
+                pass
+            else:
+                print('Setting velocity to {0}'.format(velocity))
+                inverter.set_target_velocity(velocity)
+            sleep(3)
+            inverter.print_current_smoothed()
     except KeyboardInterrupt as e:
         logging.info('[Main] Got exception {0}... exiting now'.format(e))
     finally:
         exit_flag.set()  # in case any thread is still working
-        epos.disconnect()
-        client.publish(mqttCanopenStatus, payload='Connected',
+        client.publish(general_topics['canopen'], payload='Disconnected',
                        qos=2, retain=True)
         client.cleanExit()
         client.loop_stop(force=True)

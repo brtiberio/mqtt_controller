@@ -1,0 +1,3 @@
+canopen
+numpy
+paho-mqtt
