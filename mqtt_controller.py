@@ -64,6 +64,7 @@ sinamics_topics = {'connected': 'VIENA/SINAMICS/connected',  # inverter connecte
 # Creation of logger handler to send log messages over mqtt
 # ----------------------------------------------------------------------------------------------------------------------
 
+
 class MQTTHandler(logging.Handler):
     """
     A handler class which writes logging records, appropriately formatted,
@@ -128,7 +129,7 @@ class EposController(Epos):
         (0xF001, "Hall Sensor Error"),
         (0xFF02, "Index Processing Error"),
         (0xFF03, "Encoder Resolution Error"),
-        (0xFF04, "Hallsensor not found Error"),
+        (0xFF04, "Hall sensor not found Error"),
         (0xFF06, "Negative Limit Error"),
         (0xFF07, "Positive Limit Error"),
         (0xFF08, "Hall Angle detection Error"),
@@ -510,7 +511,7 @@ class EposController(Epos):
         self.minValue = min_value
         self.maxValue = max_value
         self.zeroRef = round((max_value - min_value) / 2.0 + min_value)
-        self.calibrated = 1
+        self.calibrated = True
         self.log_info('MinValue: {0}, MaxValue: {1}, ZeroRef: {2}'.format(
             self.minValue, self.maxValue, self.zeroRef
         ))
@@ -786,7 +787,7 @@ def signal_handler(signum, frame):
         logging.info('Received signal INTERRUPT... exiting now')
     if signum == signal.SIGTERM:
         logging.info('Received signal TERM... exiting now')
-    client.cleanExit()
+    client.clean_exit()
     return
 
 
@@ -894,7 +895,6 @@ def main():
         if rc != 0:
             logging.info("Unexpected MQTT disconnection. Will auto-reconnect")
 
-
     def clean_exit():
         """Handle exiting request
 
@@ -933,7 +933,7 @@ def main():
     client.on_connect = on_connect
     client.on_message = on_message
     client.on_disconnect = on_disconnect
-    client.cleanExit = clean_exit
+    client.clean_exit = clean_exit
     client.connected = False
     # ---------------------------------------------------------------------------
     # setup mqtt_controller logger to transmit logging messages via mqtt but do
@@ -975,7 +975,7 @@ def main():
     finally:
         if not no_faults:
             logging.info('Failed to connect to can network...Exiting')
-            client.cleanExit()
+            client.clean_exit()
             client.loop_stop(force=True)
             return
     # instantiate Sinamics inverter object using external network
@@ -985,7 +985,7 @@ def main():
         logging.info('Failed to begin connection with Sinamics device')
         logging.info('Exiting now')
         client.publish(sinamics_topics['connected'], payload=False.to_bytes(1, 'little'), qos=2, retain=True)
-        client.cleanExit()
+        client.clean_exit()
         client.loop_stop(force=True)
         return
     # if successfully connected, publish it to sinamics connected topic
@@ -1012,7 +1012,7 @@ def main():
     if num_fails is 5:
         logging.info('Failed to contact inverter... is it connected? Exiting')
         client.publish(sinamics_topics['connected'], payload=False.to_bytes(1, 'little'), qos=2, retain=True)
-        client.cleanExit()
+        client.clean_exit()
         client.loop_stop(force=True)
         return
     # send current state to mqtt
@@ -1077,7 +1077,7 @@ def main():
         exit_flag.set()  # in case any thread is still working
         client.publish(general_topics['canopen'], payload='Disconnected',
                        qos=2, retain=True)
-        client.cleanExit()
+        client.clean_exit()
         client.loop_stop(force=True)
     return
 
